@@ -1,0 +1,616 @@
+---
+title: Operators
+---
+
+## Summary
+
+  ShardScript provides built-in operators for arithmetic, bitwise, logical, comparison,
+  assignment, and exponentiation. The compiler resolves expressions according to a fixed
+  precedence table and falls back to user-defined `operator` methods
+  when the left-hand type does not support an operator natively. The language also performs a
+  small set of implicit conversions — such as operator promotion and string concatenation — in
+  specific contexts.
+
+## Syntax
+
+  Operators are written infix, prefix, or postfix depending on the operator. The following
+  table groups every operator by purpose.
+
+| Category | Operators | Description |
+| --- | --- | ---
+| Arithmetic | `+ - * / % ^` | Add, subtract, multiply, divide, modulo, exponentiate |
+| Bitwise | `& \| << >>` | AND, OR, left shift, right shift on integral types |
+| Logical | `! & \| and or not` | NOT, AND, OR on bool values |
+| Comparison | `== != < > <= >=` | Equality and ordering |
+| Assignment | `=` | Simple assignment |
+| Compound assignment | `+= -= *= /= %= ^= &= \|=` | Recognized by the lexer and parser but not yet correctly emitted (expand manually) |
+
+  For operator precedence and associativity, see the precedence table in the
+  `Operator precedence and associativity` section below.
+
+## Parameters / Arguments
+
+  Binary operators take a left and a right operand. Unary operators take a single operand.
+  The compiler checks the operand types during semantic analysis.
+
+| Operator | Left Operand | Right Operand | Type Rules |
+| --- | --- | --- | ---
+| `+` | numeric or string | numeric or string | If either side is string, concatenates; if either side is double, result is double; otherwise int. |
+| `- *` | numeric | numeric | double if any operand is double, otherwise int. |
+| `/` | numeric | numeric | double if any operand is double; otherwise int division truncates toward zero. |
+| `%` | numeric | numeric | int remainder for int operands; std::fmod for double operands. |
+| `^` | numeric | numeric | Raises left to the power of right using std::pow; int result truncates. |
+| `& \|` | bool or integral | bool or integral | bool operands yield logical AND/OR; integral operands yield bitwise AND/OR. |
+| `<< >>` | integral | integral | Shifts the left operand by the right operand. |
+| `== !=` | primitive, string, or reference | primitive, string, or reference | Compares value for primitives/strings; reference identity for reference types. |
+| `< <= > >=` | numeric, string, or bool | numeric, string, or bool | Ordering comparison; both operands must be the same comparable kind. |
+| `=` | lvalue | expression | Right-hand type must be assignable to the left-hand type. |
+
+The unary operators take a single operand:
+
+  - `!value` / `not value` — operand must be  `bool`; returns `bool`.
+  - `+value` / `-value` — operand must be numeric;  `-` negates, `+` is a no-op for sign clarity.
+  - `++value` / `--value` / `value++`  / `value--` — operand must be a numeric lvalue; mutates the variable.
+
+## Returns
+
+| Operator | Return Type |
+| --- | ---
+| `+ - * / %` | `int` if both operands are integral; otherwise `double`. `+` returns `string` when either operand is `string`. |
+| `^` | `double` if either operand is `double`; otherwise `int` (truncated). |
+| `& \|` | `bool` for bool operands; `int` for integral operands. |
+| `<< >>` | int. |
+| `== != < <= > >=` | bool. |
+| `= += -= *= /= %= ^= &= \|=` | The type of the left-hand lvalue. |
+
+## Exceptions / Errors
+
+  - **Compile-time type mismatch** — Adding a  `string` to a `bool`, shifting a  `double`, or applying a numeric operator to a non-numeric type fails semantic analysis.
+  - **Operator not defined** — Applying an operator to a user-defined type that has no matching `operator` overload produces a compile error.
+  - **Invalid assignment target** — The left side of  `=` must be a variable, field, property, or indexer expression.
+  - **DivideByZeroException** — Integer, character, byte, native-pointer, and enum division or modulo with a zero divisor throws  `DivideByZeroException`. Floating-point division by zero does not throw; it follows IEEE-754 rules and may produce infinity.
+  - **Null operand** — Performing a primitive operation on a `null` reference throws at runtime.
+  - **Type mismatch in assignment** — Assigning an  `int` to a `double`, a `byte`  to an `int`, or any other disallowed widening without a cast is a compile-time error.
+  - **Literal out of range** — A literal bound by contextual typing must still fit the target type. `b: byte = 256;` fails because 256 is outside the byte range.
+  - **Argument type mismatch** — Function arguments do not implicitly widen or narrow. The caller must supply the exact parameter type or use an explicit cast.
+  - **No implicit bool conversion** — Numeric or reference values are not implicitly convertible to `bool`. Conditions must be explicit boolean expressions.
+
+## Remarks
+
+  **Integer versus double division.** When both operands of `/`
+  are `int`, `char`, `byte`, or
+  `nint`, the result is an `int` and the fractional part
+  is discarded. The truncation follows C++ integer division semantics (toward zero). If either
+  operand is a `double`, the operation is performed in floating point and the
+  full result is kept.
+
+  **Bitwise and logical sharing.** `&` and
+  `|` serve double duty: with `bool` operands they act as
+  logical AND/OR, and with integral operands they act as bitwise AND/OR. The keyword forms
+  `and`, `or`, and `not` produce the
+  same tokens as `&`, `|`, and `!`.
+  ShardScript does not have separate short-circuiting `&&` /
+  `||` operators; even when you type `&&` or
+  `||`, both operands are always evaluated.
+
+  **Exponentiation.** `^` raises the left operand to the right
+  operand. It is *not* bitwise XOR. The VM uses `std::pow` internally.
+  When both operands are integral, the floating-point result is truncated to `int64`,
+  so negative bases with fractional exponents produce implementation-defined values.
+
+  **String concatenation.** When either operand of `+` is a
+  `string`, the other operand is converted to a string and the two are
+  concatenated. This is a convenience for small, ad-hoc output; prefer
+  `strings.Format` for templates.
+
+  **Operator overloading.** You can define operators on your own classes and structs
+  by declaring a static `operator` method whose parameter types match the
+  operands. Resolution is based on the left-hand type and requires an exact parameter-type match.
+  Binary overloads take two parameters; unary overloads take one.
+
+<Info>
+Overloadable operators include `+ - * / % ^`,
+  `& | << >>`, `== != < <= > >=`,
+  and the unary operators `! ++ --`. Conversion-style operators use
+  `operator as` and member access uses `operator .`.
+</Info>
+
+  **Increment and decrement.** Prefix form (`++x`,
+  `--x`) mutates the variable and yields the new value. Postfix form
+  (`x++`, `x--`) yields the original value and then
+  mutates the variable. The operand must be a numeric lvalue.
+
+  **Evaluation order.** Operands are evaluated left to right. Use parentheses to make
+  precedence explicit and to avoid subtle ordering bugs with mixed arithmetic and comparison
+  operators.
+
+<Warning title="Compound assignment status">
+Compound assignment operators (`+= -= *= /= %= ^= &= |=`) are recognized by
+  the lexer and parser, but the current VM emission lowers them as a plain assignment of the
+  right-hand side. Until this is fixed, expand them manually — for example, write
+  `x = x + 1` instead of `x += 1`.
+</Warning>
+
+  **Assignment is strict.** ShardScript deliberately avoids C-style numeric widening on
+  assignment. This keeps code explicit and prevents accidental loss of precision. If you need a
+  wider or narrower numeric type, write `value as TargetType`.
+
+  **Operator promotion is not assignment widening.** The promotion that happens for
+  arithmetic operators is a property of the operator, not the assignment. The result of the operator
+  still must match the type of the variable it is assigned to.
+
+  **Contextual typing does not flow through arrays.** Array element contexts do not
+  currently propagate expected types, so a byte array literal usually requires explicit casts such
+  as `[1 as byte, 2 as byte]`.
+
+  **String conversion is not universal.** Only the `+` operator
+  automatically converts non-string operands to strings. Function parameters typed as
+  `string` do not accept integers implicitly.
+
+  **Reference compatibility.** A value of a derived class is implicitly convertible to
+  any base class or implemented interface. Interfaces are not implicitly convertible to derived
+  classes; that requires a cast.
+
+## Implicit conversions and promotion
+
+  ShardScript performs only a small set of implicit conversions. Most type changes — including
+  numeric widening, reference downcasts, and primitive reinterpretation — require an explicit
+  `as` cast. The compiler does allow implicit conversions in specific contexts:
+  literal typing, string concatenation, arithmetic operator promotion, array-to-interface
+  implementation, and a few special cases such as `char` mixed with
+  `string`.
+
+| Context | Source | Target | Result |
+| --- | --- | --- | ---
+| Literal assignment | integer literal | `byte` or `nint` | Literal is bound to the target type if the value fits. |
+| String concatenation | any primitive or reference | `string` | Non-string operand is converted to its string representation. |
+| Arithmetic operator | numeric value | wider numeric type | If either operand is double, the other is promoted to double; byte stays byte only when both operands are byte. |
+| Array type | any array | `IEnumerable<T>` | Every array type implicitly implements IEnumerable&lt;T&gt; with the same element type. |
+| Null reference | `null` | any reference type | The null reference is assignable to any class, interface, array, or string variable. |
+
+  **Literal context.** When an integer literal appears where the expected type is
+  `byte` or `nint`, the compiler binds the literal to
+  that type instead of `int`. The value must still fit the target range.
+
+  **String concatenation.** The `+` operator converts the
+  non-string operand to a string when one side is a `string`. Both operands
+  are evaluated.
+
+  **Arithmetic promotion.** Mixed numeric operands are promoted according to operator
+  rules: `double` wins over `int` and
+  `nint`; `int` mixed with `nint`
+  yields `int`; two `byte` values stay
+  `byte`.
+
+## Operator precedence and associativity
+
+  ShardScript resolves expressions according to a fixed precedence table. Operators with higher
+  precedence bind tighter than operators with lower precedence. When operators share the same
+  precedence, they associate left-to-right except for exponentiation, which associates
+  right-to-left. Parentheses override precedence entirely.
+
+  The precedence table below is taken directly from the parser. Higher numbers bind tighter. Range
+  operators (`..`, `..&`), null-coalescing
+  (`??`), and the conditional operator (`? :`) are shown
+  for completeness even though they are documented in detail on other pages.
+
+| Precedence | Operators | Associativity | Notes |
+| --- | --- | --- | ---
+| 11 | `++ -- ! +x -x await` | left-to-right | Postfix/prefix increment, decrement, unary plus/minus, logical NOT |
+| 10 | `^` | right-to-left | Exponentiation (not bitwise XOR) |
+| 9 | `* / %` | left-to-right | Multiplication, division, modulo |
+| 8 | `+ -` | left-to-right | Addition and subtraction; + also concatenates strings |
+| 7 | `<< >> .. ..&` | left-to-right | Bit shifts and range operators |
+| 6 | `< <= > >=` | left-to-right | Ordering comparisons |
+| 5 | `== != is as` | left-to-right | Equality and type tests |
+| 4 | `& and &&` | left-to-right | Bitwise AND or logical AND |
+| 3 | `\| or \|\|` | left-to-right | Bitwise OR or logical OR |
+| 2 | `?? ? :` | right-to-left | Null-coalescing and conditional |
+| 1 | `= += -= *= /= %= ^= &= \|=` | right-to-left | Assignment and compound assignment |
+
+  **Operand count.** Unary operators take one operand. Binary operators take a left and
+  a right operand. Assignment operators require a modifiable lvalue on the left.
+
+  **Operand evaluation.** Operands are evaluated left-to-right regardless of operator
+  precedence. Precedence only determines how the results are combined.
+
+  **Parentheses.** Any expression may be wrapped in parentheses to force a specific
+  grouping. Parenthesized subexpressions are evaluated before the surrounding expression uses their
+  value.
+
+  **Exponentiation associativity.** `^` is the only arithmetic
+  operator that associates right-to-left. `2 ^ 3 ^ 2` is parsed as
+  `2 ^ (3 ^ 2)`, which equals 512, not 64.
+
+## Examples
+
+  **Arithmetic and integer-vs-double division.**
+
+// arithmetic.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    a: int = 7;
+    b: int = 2;
+
+    println(a + b);          // 9
+    println(a - b);          // 5
+    println(a * b);          // 14
+    println(a / b);          // 3  (integer division truncates toward zero)
+    println(a % b);          // 1
+    println(2 ^ 10);         // 1024
+
+    // A double operand forces floating-point division.
+    println(7.0 / 2);        // 3.5
+
+    // Negation with unary minus.
+    println(-a);             // -7
+}
+```
+
+  **Bitwise and logical operators.**
+
+// bitwise_logical.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Bitwise on integers.
+    println(12 & 10);        // 8   (1100 & 1010)
+    println(12 | 10);        // 14  (1100 | 1010)
+    println(1 << 4);         // 16
+    println(256 >> 2);       // 64
+
+    // Logical on booleans.
+    a: bool = true;
+    b: bool = false;
+
+    println(!a);             // false
+    println(a and b);        // false
+    println(a or b);         // true
+
+    // Both sides are always evaluated: no short-circuit.
+    // Guarding against side effects requires an explicit if statement.
+    if (a)
+    {
+        println("a is true");
+    }
+}
+```
+
+  **Comparisons and string equality.**
+
+// comparison.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    x: int = 5;
+    y: int = 10;
+
+    println(x < y);          // true
+    println(x == y);         // false
+    println(x >= 5);         // true
+
+    // String comparison uses value equality.
+    left: string  = "shard";
+    right: string = "shard";
+    println(left == right);  // true
+
+    // Reference types compare by identity unless an operator is overloaded.
+    a: object = new object();
+    b: object = a;
+    println(a == b);         // true
+}
+```
+
+  **Assignment and compound assignment.**
+
+// assignment.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    count: int = 10;
+
+    // Simple assignment.
+    count = 20;
+    println(count);          // 20
+
+    // Compound assignment syntax is recognized, but the VM currently emits
+    // only a plain assignment. Use explicit expansion for correct behavior.
+    count = count + 5;
+    println(count);          // 25
+
+    count = count * 2;
+    println(count);          // 50
+
+    // Bitwise compound assignment is also written the same way.
+    flags: int = 1;
+    flags = flags | 4;       // set the third bit
+    println(flags);          // 5
+}
+```
+
+  **Operator overloading.**
+
+// operator_overload.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Vector2
+{
+    public X: double;
+    public Y: double;
+
+    public init(x: double, y: double)
+    {
+        this.X = x;
+        this.Y = y;
+    }
+
+    // Overload + so two Vector2 values add component-wise.
+    public static operator +(a: Vector2, b: Vector2) -> Vector2
+    {
+        return new Vector2(a.X + b.X, a.Y + b.Y);
+    }
+}
+
+public static func Main() -> void
+{
+    v1: Vector2 = new Vector2(1.0, 2.0);
+    v2: Vector2 = new Vector2(3.0, 4.0);
+    sum: Vector2 = v1 + v2;
+
+    println(sum.X);          // 4.0
+    println(sum.Y);          // 6.0
+}
+```
+
+  **Precedence, parentheses, and edge cases.**
+
+// precedence.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Without parentheses, multiplication binds tighter than addition.
+    println(2 + 3 * 4);      // 14, not 20
+
+    // Use parentheses to make intent explicit.
+    println((2 + 3) * 4);    // 20
+
+    // Comparison has lower precedence than arithmetic.
+    result: bool = 1 + 2 < 4;
+    println(result);         // true
+
+    // Power binds tighter than multiplication.
+    println(2 * 3 ^ 2);      // 18 (3^2 == 9, then *2)
+
+    // Integer division truncates toward zero for negatives too.
+    println(-7 / 2);         // -3
+
+    // Modulo follows the dividend's sign in this implementation.
+    println(-7 % 3);         // -1
+
+    // Integer division by zero throws DivideByZeroException.
+    // println(1 / 0);          // throws
+}
+```
+
+  **Contextual literal typing.**
+
+// contextual_typing.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // The literal is bound to byte/nint because the variable type says so.
+    small: byte = 255;
+    handle: nint = 0;
+
+    println(small);          // 255
+    println(handle);         // 0
+
+    // Out-of-range literals are rejected even with contextual typing.
+    // b: byte = 256;          // ERROR: literal out of range
+}
+```
+
+  **String concatenation promotion.**
+
+// string_concat.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    count: int = 42;
+
+    // The int is implicitly converted to string by the + operator.
+    message: string = "count: " + count;
+    println(message);        // count: 42
+
+    // This only works with +; a string parameter does not accept int.
+    // PrintOnlyString(count); // ERROR: int is not assignable to string
+}
+```
+
+  **Arithmetic operator promotion.**
+
+// arithmetic_promotion.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    a: int = 7;
+    b: double = 2.0;
+
+    // a is promoted to double; result is double.
+    result: double = a / b;
+    println(result);         // 3.5
+
+    // int division stays int; assignment to double would fail without a cast.
+    truncated: int = 7 / 2;
+    println(truncated);      // 3
+}
+```
+
+  **Reference upcasting.**
+
+// reference_upcast.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Animal
+
+
+public class Dog : Animal
+
+
+public static func Main() -> void
+{
+    dog: Dog = new Dog();
+
+    // Implicit upcast to base class.
+    animal: Animal = dog;
+    println(animal != null); // true
+
+    // Downcast requires an explicit cast.
+    back: Dog = animal as Dog;
+    println(back != null);   // true
+}
+```
+
+  **Common mistake: expecting implicit numeric widening.**
+
+// no_widening.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    i: int = 10;
+
+    // Invalid and commented out:
+    // d: double = i;          // ERROR: int is not assignable to double
+    // b: byte = 5;
+    // j: int = b;             // ERROR: byte is not assignable to int
+
+    // Correct: explicit cast.
+    d: double = i as double;
+    println(d);              // 10.0
+}
+```
+
+  **Using parentheses to override precedence.**
+
+// parentheses.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Parentheses force the addition first.
+    println((2 + 3) * 4);    // 20
+
+    // Parentheses make the exponentiation explicit.
+    println((2 ^ 3) ^ 2);    // 64 (2^3 == 8, then 8^2)
+}
+```
+
+  **Comparison and arithmetic precedence.**
+
+// comparison_precedence.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Comparison has lower precedence than arithmetic.
+    result: bool = 1 + 2 < 4;
+    println(result);         // true
+
+    // The following is parsed as (a + b) == c, which is false.
+    a: int = 1;
+    b: int = 2;
+    c: int = 4;
+    println(a + b == c);     // false
+}
+```
+
+  **Logical and bitwise operators share precedence levels.**
+
+// logical_precedence.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Bitwise AND binds tighter than OR.
+    println(12 | 10 & 8);    // 12 (10 & 8 == 8, then 12 | 8)
+
+    // Both operands are evaluated: side effects always run.
+    x: int = 0;
+    a: bool = true;
+    b: bool = false;
+
+    if (a and b)
+    {
+        x = 1;
+    }
+
+    println(x);              // 0 because b is false
+}
+```
+
+## See also
+
+  - [`Primitive Types`](/syntax/fundamentals/primitive-types) — the types that operands may have.
+  - [`Operator Overloading`](/syntax/object-oriented/operator-overloading) — defining custom operators on classes and structs.
+  - [`switch Expressions`](/syntax/control-flow/switch-expressions) — using `is` and `as`  for type tests.
+  - [`type-inference`](/syntax/fundamentals/type-inference) — how the compiler resolves local variable types.
+
+## Source
+
+  Operator resolution, precedence, and primitive math execution are implemented in
+  `ShardScript/src/runtime/VirtualMachine.cpp`,
+  `ShardScript/src/runtime/PrimitiveMathModule.cpp`,
+  `ShardScript/src/compiler/Parser.cpp`, and
+  `ShardScript/src/compiler/SemanticAnalyzer.cpp`.

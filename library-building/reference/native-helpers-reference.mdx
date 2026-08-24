@@ -1,0 +1,203 @@
+---
+title: Native Helpers Reference
+---
+
+## Summary
+
+  The helpers declared in `<shard/runtime/NativeHelpers.hpp>` reduce the
+  boilerplate required to construct ShardScript objects, invoke methods, and read or write fields and
+  properties from inside native C++ callbacks. They are inline header-only wrappers around the runtime
+  allocation and invocation APIs, so including the header is sufficient; no additional link dependency is
+  required.
+
+## Syntax
+
+  Include the header and call the helpers from within a native callback. All helpers live in the
+  `shard` namespace and accept the same `CallState` that the
+  surrounding callback receives.
+
+// NativeHelpers.hpp
+```cpp
+#include <shard/runtime/NativeHelpers.hpp>
+
+ObjectInstance* NewObject(
+    const CallState& context,
+    TypeSymbol* type);
+
+ObjectInstance* NewObject(
+    const CallState& context,
+    TypeSymbol* type,
+    ConstructorSymbol* ctor,
+    std::initializer_list<ObjectInstance*> args =  );
+
+ObjectInstance* NewObject(
+    const CallState& context,
+    ClassSymbol* cls,
+    const std::vector<TypeSymbol*>& typeArgs,
+    std::initializer_list<ObjectInstance*> args =  );
+
+ObjectInstance* CallMethod(
+    const CallState& context,
+    MethodSymbol* method,
+    std::initializer_list<ObjectInstance*> args =  );
+
+ObjectInstance* CallMethod(
+    const CallState& context,
+    MethodSymbol* method,
+    ObjectInstance* receiver,
+    std::initializer_list<ObjectInstance*> args =  );
+
+ObjectInstance* GetField(
+    ObjectInstance* obj,
+    FieldSymbol* field);
+
+void SetField(
+    ObjectInstance* obj,
+    FieldSymbol* field,
+    ObjectInstance* value);
+
+ObjectInstance* GetProperty(
+    const CallState& context,
+    ObjectInstance* obj,
+    PropertySymbol* prop);
+
+void SetProperty(
+    const CallState& context,
+    ObjectInstance* obj,
+    PropertySymbol* prop,
+    ObjectInstance* value);
+```
+
+## Parameters / Arguments
+
+| Helper | Parameters | Description |
+| --- | --- | ---
+| `NewObject` | `context`, `type` | Allocates and constructs an instance of `type` using its parameterless constructor. |
+| `NewObject` | `context`, `type`, `ctor`, `args` | Allocates and constructs an instance of `type` using the supplied constructor and arguments. |
+| `NewObject` | `context`, `cls`, `typeArgs`, `args` | Allocates a constructed generic instance of `cls` with the given type arguments and invokes the constructor whose arity matches `args.size()`. |
+| `CallMethod` | `context`, `method`, `args` | Invokes a static method with the supplied arguments. |
+| `CallMethod` | `context`, `method`, `receiver`, `args` | Invokes an instance method on `receiver` with the supplied arguments. |
+| `GetField` | `obj`, `field` | Returns the value stored in `field`. |
+| `SetField` | `obj`, `field`, `value` | Stores `value` in `field`. |
+| `GetProperty` | `context`, `obj`, `prop` | Invokes the getter of `prop` and returns its value. |
+| `SetProperty` | `context`, `obj`, `prop`, `value` | Invokes the setter of `prop` with `value`. |
+
+## Returns
+
+  `NewObject` and both `CallMethod` overloads return a
+  `shard::ObjectInstance*`. `GetField` and
+  `GetProperty` return the current field or property value as a borrowed reference.
+  `SetField` and `SetProperty` return `void`.
+
+## Exceptions / Errors
+
+  - **Null type, constructor, method, field, or property.**  Every helper validates its symbol pointer and throws `std::runtime_error` if a required symbol is `nullptr`.
+  - **Missing parameterless constructor.**  `NewObject(context, type)` throws if the type has no parameterless constructor.
+  - **No matching generic constructor.** The generic  `NewObject` overload throws if no constructor in `cls` has a parameter count equal to `args.size()`.
+  - **Missing accessor.**  `GetProperty` throws if the property has no getter;  `SetProperty` throws if it has no setter.
+  - **Constructor exception.** If the invoked constructor throws, `NewObject` decrements the temporary owning reference before rethrowing so the partially constructed instance is not leaked.
+  - **Invalid standard-interface kind.**  `Shard_GetStandardInterface` returns `nullptr` if the supplied kind is outside the range of known standard interfaces.
+
+## Remarks
+
+  `NewObject` returns an object with an owning reference: the reference count is 1 when
+  the helper returns. This keeps the object alive while the callback is still constructing it. If you do not
+  store the object in a field, return it to the caller, or otherwise transfer ownership to the garbage
+  collector, call `DecrementReference()` before returning to avoid a leak.
+
+  `CallMethod` builds the argument vector for you. For instance methods it prepends the
+  receiver so the underlying delegate receives `context.Args[0]` as
+  `this`. For static methods the argument vector contains exactly the values you pass.
+
+  `GetField` and `SetField` read and write through the
+  `FieldSymbol` pointer returned by `AddField`. Use the symbol
+  rather than a hard-coded slot offset so registration-order changes do not break field access.
+
+  `GetProperty` and `SetProperty` invoke the property accessors
+  through the registered getter and setter callbacks. They are convenience wrappers around
+  `CallMethod`; the same borrowing and return-value rules apply.
+
+  **Null argument unwrapping.** The argument-unwrapping helpers used internally by the
+  runtime return `nullptr` when a `nint` or object argument
+  is the managed `null` instance. Native callbacks that expect a non-null pointer
+  should validate the result before dereferencing it.
+
+  **Looking up standard interfaces.** The C API exposes
+  `Shard_GetStandardInterface` to retrieve the symbols for built-in interfaces
+  such as `IPrintable`, `IDisposable`,
+  `IEnumerable<T>`, `IThrowable`, and the async
+  state-machine interfaces. Pass a `ShardStandardInterfaceKind` value cast to
+  `int`.
+
+// standard_interface_lookup.cpp
+```cpp
+#include <shard/ShardScriptExtern.hpp>
+
+InterfaceSymbol* disposable = Shard_GetStandardInterface(
+    context.Compilation,
+    static_cast<int>(ShardStandardInterfaceKind::Disposable));
+```
+
+## Examples
+
+  The following callback constructs a managed object, invokes an instance method, reads a field, and sets a
+  property. The captured symbols are stored during `SHARDLIB_ENTRYPOINT`.
+
+// sensor_demo.cpp
+```cpp
+#include <shard/runtime/NativeHelpers.hpp>
+
+static ClassSymbol* g_sensorClass = nullptr;
+static MethodSymbol* g_sensorReadMethod = nullptr;
+static FieldSymbol* g_sensorIdField = nullptr;
+static PropertySymbol* g_sensorValueProp = nullptr;
+
+static ObjectInstance* CreateAndConfigureSensor(const CallState& context)
+{
+    // Allocate and construct Sensor() with an owning reference.
+    ObjectInstance* sensor = NewObject(context, g_sensorClass);
+
+    // Invoke instance method Sensor.Read().
+    ObjectInstance* rawValue = CallMethod(context, g_sensorReadMethod, sensor);
+
+    // Read the Id field directly.
+    ObjectInstance* id = GetField(sensor, g_sensorIdField);
+
+    // Write the Value property through its setter.
+    SetProperty(context, sensor, g_sensorValueProp, rawValue);
+
+    // Decrement the owning reference; the returned sensor keeps the caller's borrow alive.
+    sensor->DecrementReference();
+    return sensor;
+}
+```
+
+  The generic overload is useful when a callback must manufacture a constructed generic type such as
+  `Cell<int>`.
+
+// generic_demo.cpp
+```cpp
+static ObjectInstance* MakeIntCell(const CallState& context)
+{
+    ObjectInstance* cell = NewObject(context, g_cellClass, { TYPE_INT });
+
+    // cell now holds an owning reference. Store a value before returning it.
+    SetField(cell, g_cellValueField, context.Collector.FromValue(42));
+    return cell;
+}
+```
+
+## See also
+
+  - [`library-building/native-callback-helpers`](/library-building/reference/native-callback-helpers) — the  `GetArgs<T...>` helper for reading primitive arguments.
+  - [`library-building/working-with-objects`](/library-building/how-to/working-with-objects) — allocating and manipulating objects from native code.
+  - [`library-building/working-with-fields`](/library-building/how-to/working-with-fields) — reading and writing fields.
+  - [`library-building/class-symbol-builder`](/library-building/reference/class-symbol-builder) — registering classes, fields, methods, and properties.
+
+## Source
+
+  The native side of this API is implemented in `shard/runtime/NativeHelpers.hpp`.
+  The standard-interface lookup function and its enum are declared in
+  `ShardScript/include/shard/ShardScriptExtern.hpp`.
+  View the source on GitHub:
+  `https://github.com/Rikitav/ShardScript/blob/main/ShardScript/include/shard/runtime/NativeHelpers.hpp`.

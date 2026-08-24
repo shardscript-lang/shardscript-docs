@@ -1,0 +1,198 @@
+---
+title: Basic Math
+---
+
+The `shard.math` library provides a **static class**
+  `Math` in the `math` namespace. All members are
+  `static` — no instance of `Math` is ever created.
+  Every function is a thin native wrapper over the C++ standard library (`<cmath>`),
+  operating on `double` values throughout.
+
+// math_basic.shard
+```csharp
+using stdio;
+using math;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Static constants on the Math class.
+    println(Math.PI);   // 3.141592653589793
+    println(Math.E);    // 2.718281828459045
+
+    // Basic arithmetic via built-in operators.
+    a: int = 5;
+    b: int = 3;
+    println(a + b);     // 8
+    println(a - b);     // 2
+    println(a * b);     // 15
+    println(a / b);     // 1  (integer division)
+    println(a % b);     // 2  (modulo)
+}
+```
+
+## Constants
+
+  Two mathematical constants are available as **static read-only properties**:
+
+| Property | Type | Approximate Value | Description |
+| --- | --- | --- | ---
+| `PI` | double | 3.141592653589793... | Ratio of a circle's circumference to its diameter. |
+| `E` | double | 2.718281828459045... | Euler's number — base of the natural logarithm. |
+
+  Both constants are implemented as native getter callbacks that return pre-computed C++
+  `double` literals. There is no allocation, no lookup — each access
+  is equivalent to a single native function call that pushes a 64-bit float onto the
+  evaluation stack.
+
+## Rounding Functions
+
+Three rounding modes cover all common use cases:
+
+| Method | Return | Description | C++ Backing |
+| --- | --- | --- | ---
+| `Ceil(value)` | double | Rounds up to the nearest integer. | std::ceil |
+| `Floor(value)` | double | Rounds down to the nearest integer. | std::floor |
+| `Round(value)` | double | Rounds to the nearest integer (halfway cases away from zero). | std::round |
+
+// math_rounding.shard
+```csharp
+using stdio;
+using math;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    x: double = 3.7;
+    y: double = -3.7;
+
+    println(Math.Ceil(x));    // 4.0
+    println(Math.Floor(x));   // 3.0
+    println(Math.Round(x));   // 4.0
+
+    println(Math.Ceil(y));    // -3.0
+    println(Math.Floor(y));   // -4.0
+    println(Math.Round(y));   // -4.0
+}
+```
+
+<Info>
+`Ceil` always rounds toward positive infinity.
+  `Floor` always rounds toward negative infinity.
+  `Round` follows IEEE 754 round-half-away-from-zero semantics.
+</Info>
+
+## Absolute Value, Min & Max
+
+| Method | Return | Description | C++ Backing |
+| --- | --- | --- | ---
+| `Abs(value)` | double | Absolute value — makes negative numbers positive. | std::abs |
+| `Min(a, b)` | double | Returns the smaller of two numbers. | std::fmin |
+| `Max(a, b)` | double | Returns the larger of two numbers. | std::fmax |
+
+// math_abs_minmax.shard
+```csharp
+using stdio;
+using math;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    println(Math.Abs(-42));        // 42.0
+    println(Math.Abs(42));         // 42.0
+
+    println(Math.Min(10, 20));     // 10.0
+    println(Math.Max(10, 20));     // 20.0
+
+    println(Math.Min(-5.5, -3.2));  // -5.5
+    println(Math.Max(-5.5, -3.2));  // -3.2
+}
+```
+
+## Operator-Based Arithmetic
+
+  Basic arithmetic uses ShardScript's built-in operators rather than static methods.
+  These are not part of the `shard.math` library per se, but form
+  the foundation of all numeric computation:
+
+| Operator | Semantics | For int | For double |
+| --- | --- | --- | ---
+| `+` | Addition | Integer sum | Floating-point sum |
+| `-` | Subtraction | Integer difference | Floating-point difference |
+| `*` | Multiplication | Integer product | Floating-point product |
+| `/` | Division | Integer division (truncates toward zero) | Floating-point division |
+| `%` | Modulo | Remainder (sign follows dividend) | Not directly applicable (use fmod via Math) |
+
+  Integer division truncates toward zero. For floating-point remainder, use
+  `Math.Fmod` (not yet exposed in the `Math` class,
+  but the underlying C++ `std::fmod` is available in the runtime).
+
+## Internal Mechanics
+
+<div className="space-y-5">
+  <div className="bg-[#1A1A2E] border border-[#3A3A50] rounded-card p-5">
+    <div className="flex items-center gap-3 mb-3">
+      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-accent-blue text-white text-xs font-jetbrains font-semibold">1</span>
+      <strong className="text-text-primary text-sm">Static Class, No Instances</strong>
+    </div>
+
+      `Math` is declared with `LINK_STATIC` —
+      the class itself is never instantiated. All methods are `static`
+      and receive no `this` pointer. Calls compile to
+      `CALLSTATICMETHODSYMBOL` with the symbol resolved at compile time.
+
+  </div>
+
+  <div className="bg-[#1A1A2E] border border-[#3A3A50] rounded-card p-5">
+    <div className="flex items-center gap-3 mb-3">
+      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-accent-blue text-white text-xs font-jetbrains font-semibold">2</span>
+      <strong className="text-text-primary text-sm">Native Callbacks (No Bytecode)</strong>
+    </div>
+
+      Every method is backed by a native C++ callback (`SetCallback`).
+      There is no ShardScript bytecode for math functions — the VM dispatches directly to the
+      native function, which calls the corresponding `std::` function
+      from `<cmath>`. The result is wrapped in an
+      `ObjectInstance` via `FromValue`.
+
+  </div>
+
+  <div className="bg-[#1A1A2E] border border-[#3A3A50] rounded-card p-5">
+    <div className="flex items-center gap-3 mb-3">
+      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-accent-blue text-white text-xs font-jetbrains font-semibold">3</span>
+      <strong className="text-text-primary text-sm">Double Throughout</strong>
+    </div>
+
+      All math functions accept and return `double`. Integer arguments
+      are implicitly converted to `double` at the call boundary via
+      `AsDouble()`. Results are always new `double`
+      instances on the GC heap — the small-int cache does not apply to floating-point values.
+
+  </div>
+</div>
+
+## Category Summary: Basic Math
+
+| Feature | Members |
+| --- | ---
+| Constants | PI, E |
+| Rounding | Ceil, Floor, Round |
+| Absolute value | Abs |
+| Min / Max | Min, Max |
+| Arithmetic (operators) | +, -, *, /, % |
+
+## See also
+
+  - [`Trigonometry & Logarithms`](/stdlib/math/trigonometry-and-logarithms) — advanced `Math` functions.
+  - [`Random Number Generation`](/stdlib/math/random) — the `Random` static class.
+
+## Source
+
+  The `shard.math` implementation ships as part of
+  `ShardScript.Framework`. The native binding for `Math.PI`,
+  `Math.E`, `Math.Abs`, `Math.Min`,
+  `Math.Max`, and the rounding functions is in
+  `ShardScript.Framework/system/math.shard.cpp`.

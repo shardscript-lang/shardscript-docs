@@ -1,0 +1,314 @@
+---
+title: 'Example: shard.collections'
+---
+
+## Summary
+
+  The `shard.collections` native library implements four generic collection types:
+  `List<T>`, `Dictionary<K,V>`,
+  `Queue<T>`, and `Stack<T>`. Its source lives in
+  `ShardScript.Framework/system/collections.shard.cpp` and demonstrates how to
+  register generic classes, structs, indexers, properties, methods, and enumerator implementations in
+  a single native library. The library registers the `collections` namespace and
+  exposes generic collection APIs that ShardScript code consumes like ordinary managed types.
+
+## Syntax
+
+  The library exports metadata and registration through the macros provided by
+  `<shard/ShardScriptLIB.hpp>`. The macros expand to the required
+  `extern "C"` symbols.
+
+// collections.shard.cpp
+```cpp
+#include <ShardScript.hpp>
+
+using namespace shard;
+
+SHARDLIB_GETMETADATA
+{
+    lib.Name        = L"shard.collections";
+    lib.Description = L"Standard collections";
+    lib.Version     = L"0.3.0";
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> collectionsNs(context, L"collections");
+
+    // Register List<T>, Dictionary<K,V>, Queue<T>, Stack<T>,
+    // supporting structs, and enumerators here.
+}
+```
+
+  Each collection is registered as a generic class with type parameters and fields. The following
+  table lists the public surface area that `shard.collections` exposes to
+  ShardScript.
+
+| Type | Members | Description |
+| --- | --- | ---
+| `List<T>` | Add(item), ElementAt(index), RemoveAt(index), Clear, Length, [index] | Growable array-backed list. |
+| `Dictionary<K,V>` | Add(key, value), Remove(key), ContainsKey(key), Clear, Count, Keys, Values, [key] | Open-addressed hash table. |
+| `Queue<T>` | Enqueue(item), Dequeue(), Peek(), Clear, Count, Contains(item) | Circular array-backed FIFO queue. |
+| `Stack<T>` | Push(item), Pop(), Peek(), Clear, Count, Contains(item) | Array-backed LIFO stack. |
+| `KeyValuePair<K,V>` | Key, Value | Value type returned by Dictionary enumerator. |
+
+## Parameters / Arguments
+
+  The generic arguments are resolved at runtime from `context.Frame->TypeArguments`
+  in the same order in which the type parameters were registered.
+
+| Type parameter | Registered as | Runtime index |
+| --- | --- | ---
+| `T in List<T>` | listClass.AddTypeParameter(L"T") | context.Frame-&gt;TypeArguments[0] |
+| `K in Dictionary<K,V>` | dictClass.AddTypeParameter(L"K") | context.Frame-&gt;TypeArguments[0] |
+| `V in Dictionary<K,V>` | dictClass.AddTypeParameter(L"V") | context.Frame-&gt;TypeArguments[1] |
+| `T in Queue<T>` | queueClass.AddTypeParameter(L"T") | context.Frame-&gt;TypeArguments[0] |
+| `T in Stack<T>` | stackClass.AddTypeParameter(L"T") | context.Frame-&gt;TypeArguments[0] |
+
+  Instance callbacks receive `context.Args[0]` as `this`.
+  Additional arguments follow in order. For example, `List.Add(item)` maps to
+  `context.Args[1]`.
+
+## Returns
+
+  Callbacks return values through the garbage collector. The library uses the following patterns:
+
+  - Integer counts and lengths are returned with  `context.Collector.FromValue(static_cast<std::int64_t>(value))`.
+  - Boolean results are returned with `context.Collector.FromValue(found)`.
+  - Element lookups return the existing `ObjectInstance*` borrowed from the underlying array.
+  - Void methods return `nullptr`.
+  - Enumerators are allocated with  `context.Collector.AllocateGeneric(rawEnumeratorClass, std::vector<TypeSymbol*>{ ... })`.
+
+## Exceptions / Errors
+
+  The library throws `std::runtime_error` for expected failure cases. The
+  ShardScript runtime converts these into managed exceptions.
+
+| Operation | Error condition | Message |
+| --- | --- | ---
+| List.ElementAt / indexer getter / indexer setter / RemoveAt | `index < 0 or index >= Length` | index is out of bounds |
+| Dictionary indexer getter | key not found | key not found in dictionary |
+| Dictionary.Add | key already present | dictionary already contains the given key |
+| Queue.Dequeue / Queue.Peek | queue empty | queue is empty |
+| Stack.Pop / Stack.Peek | stack empty | stack is empty |
+
+## Remarks
+
+<Info title="Native library shape">
+A ShardScript native library is any shared library (`.dll` on Windows, `.so` on Linux, `.dylib` on macOS) that exports the two C-linkage symbols `ShardLib_GetMetadata` and `ShardLib_EntryPoint`. It can be built from one or many C++ source files, live inside `ShardScript.Framework` or in a completely separate project, and links against the ShardScript runtime shared library using headers from `ShardScript/include`. For the full registration contract, see `native-library-overview.mdx`.
+</Info>
+
+  **Generic registration.** Each collection class is registered with type parameters and
+  stores the raw `ClassSymbol*` and `TypeParameterSymbol*`
+  pointers in static variables. At runtime the concrete element type is read from the frame's type
+  arguments and used to allocate arrays and generic instances.
+
+// collections.shard.cpp (excerpt)
+```cpp
+static ClassSymbol* listClass_raw = nullptr;
+static TypeParameterSymbol* list_typeParam_T = nullptr;
+static FieldSymbol* list_arrayField = nullptr;
+
+// In SHARDLIB_ENTRYPOINT:
+SymbolBuilder<ClassSymbol> listClass = collectionsNs.AddClass(L"List");
+TypeParameterSymbol* listClass_typeParam_T = listClass.AddTypeParameter(L"T");
+
+listClass_raw = listClass.Get();
+list_typeParam_T = listClass_typeParam_T;
+
+list_arrayField = listClass
+    .AddField(L"_array", listClass.GetFactory().Array(listClass_typeParam_T), LINK_INSTANCE, ACS_PRIVATE)
+    .Get();
+```
+
+  **Storage strategies.** The four collections use different backing layouts:
+
+  - `List<T>` stores a single private `_array` field. Adding an element allocates a new array one element larger and copies the old contents across.
+  - `Dictionary<K,V>` stores parallel arrays for keys, values, hashes, and bucket states. It uses open addressing with linear probing, lazy deletion markers, and a load factor threshold of 75% before resizing.
+  - `Queue<T>` stores an array plus `_head`,  `_tail`, and `_size` fields. When the array fills, it compacts the elements to the front and doubles capacity.
+  - `Stack<T>` stores an array and a `_size` field. Growth follows the same doubling pattern as the queue.
+
+  **Hashing and equality.** The dictionary does not rely on managed
+  `GetHashCode` or `Equals` methods. Instead it uses the
+  native helpers `GetObjectHash` and `ObjectsEqual`.
+  Primitive types such as `int`, `double`,
+  `bool`, `char`, and `string` are
+  compared by value. Reference types fall back to pointer identity.
+
+<Info title="String hashing implementation">
+The dictionary computes the string hash with the DJB2 algorithm over the wide-character buffer
+  returned by `AsString()`. This keeps lookups fast and avoids allocating
+  managed hash-code objects.
+</Info>
+
+  **Enumerators.** Each collection exposes a nested value-type enumerator struct that
+  implements the `IEnumerator<T>` trait. The enumerator stores a
+  reference to the source collection and an index. `MoveNext` advances the
+  index and reports whether another element exists; `Current` returns the
+  element at the stored index.
+
+// collections.shard.cpp (excerpt)
+```cpp
+static ObjectInstance* shard_list_GetEnumerator(const CallState& context) noexcept(false)
+{
+    ObjectInstance* listInstance = context.Args[0];
+    TypeSymbol* concreteT = context.Frame->TypeArguments[0];
+    ObjectInstance* arrayInstance = listInstance->GetField(list_arrayField->SlotIndex);
+    const ArrayTypeSymbol* arrayType = static_cast<const ArrayTypeSymbol*>(arrayInstance->getInfo());
+
+    ObjectInstance* enumerator = context.Collector.AllocateGeneric(
+        listEnumeratorClass_raw,
+        std::vector<TypeSymbol*>{ concreteT });
+
+    enumerator->SetField(listEnumerator_sourceField->SlotIndex, arrayInstance);
+    enumerator->SetField(listEnumerator_indexField->SlotIndex,
+        context.Collector.FromValue(static_cast<std::int64_t>(-1)));
+    enumerator->SetField(listEnumerator_lengthField->SlotIndex,
+        context.Collector.FromValue(static_cast<std::int64_t>(arrayType->Length)));
+
+    return enumerator;
+}
+```
+
+  **Capacity growth.** All array-backed collections start with zero capacity, allocate
+  four slots on the first insertion, and double whenever the load threshold is reached. Because
+  `List<T>` allocates exactly one larger array per insertion, it does
+  not need an explicit growth policy; the queue, stack, and dictionary pre-allocate and resize in
+  exponential steps.
+
+  **Cross-library build placement.** The file can be compiled as one of many source files
+  in a shared-library target. It is not tied to a single-file CMake glob. A standalone project that
+  copies the same patterns only needs to include the ShardScript headers and link the runtime shared
+  library.
+
+## Examples
+
+  **Example 1: List&lt;T&gt;**
+
+// list_demo.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    numbers: List<int> = new List<int>();
+    numbers.Add(10);
+    numbers.Add(20);
+    numbers.Add(30);
+
+    println("Length: " + numbers.Length);
+    println("First: " + numbers[0]);
+
+    numbers[1] = 99;
+    println("Updated second: " + numbers.ElementAt(1));
+
+    numbers.RemoveAt(0);
+    println("After remove, Length: " + numbers.Length);
+}
+```
+
+  **Example 2: Dictionary&lt;K,V&gt;**
+
+// dictionary_demo.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    scores: Dictionary<string, int> = new Dictionary<string, int>();
+    scores.Add("alice", 95);
+    scores.Add("bob", 87);
+    scores["alice"] = 98;
+
+    if (scores.ContainsKey("bob"))
+    {
+        println("bob: " + scores["bob"]);
+    }
+
+    scores.Remove("bob");
+    println("Count: " + scores.Count);
+}
+```
+
+  **Example 3: Queue&lt;T&gt; and Stack&lt;T&gt;**
+
+// queue_stack_demo.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    queue: Queue<string> = new Queue<string>();
+    queue.Enqueue("first");
+    queue.Enqueue("second");
+    println("Dequeue: " + queue.Dequeue());
+    println("Peek: " + queue.Peek());
+    println("Queue count: " + queue.Count);
+
+    stack: Stack<int> = new Stack<int>();
+    stack.Push(1);
+    stack.Push(2);
+    stack.Push(3);
+    println("Pop: " + stack.Pop());
+    println("Stack count: " + stack.Count);
+}
+```
+
+  **Example 4: Iterating with foreach**
+
+// foreach_demo.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    list: List<int> = new List<int>();
+    list.Add(2);
+    list.Add(4);
+    list.Add(6);
+
+    foreach (value: int in list)
+    {
+        println(value);
+    }
+
+    dict: Dictionary<string, int> = new Dictionary<string, int>();
+    dict.Add("x", 1);
+    dict.Add("y", 2);
+
+    foreach (pair: KeyValuePair<string, int> in dict)
+    {
+        println(pair.Key + " = " + pair.Value);
+    }
+}
+```
+
+<Tip title="Verification hint">
+Run these programs with the `shard` interpreter and ensure the
+  `shard.collections` shared library is loaded. The enumerators implement the
+  managed `IEnumerable<T>` / `IEnumerator<T>`
+  traits, so `foreach` resolves without extra host code.
+</Tip>
+
+## See also
+
+  - [`library-building/generic-types-and-type-parameters`](/library-building/how-to/generic-types-and-type-parameters) — registering generic types.
+  - [`library-building/example-math-library`](/library-building/tutorials/example-math-library) — a simple stateless native library example.
+  - [`library-building/design-best-practices`](/library-building/concepts/design-best-practices) — design guidelines for native libraries.
+
+## Source
+
+  The example implementation lives in `ShardScript.Framework/system/collections.shard.cpp`.
+  View the source on GitHub: `https://github.com/Rikitav/ShardScript/blob/main/ShardScript.Framework/system/collections.shard.cpp`.

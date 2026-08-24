@@ -1,0 +1,185 @@
+---
+title: The Native Callback Contract
+---
+
+## Summary
+
+  Every native C++ callback registered through `SHARDLIB_ENTRYPOINT` shares the same
+  signature: it receives a `const shard::CallState&` and returns a
+  `shard::ObjectInstance*`. The runtime uses this contract to pass borrowed arguments
+  into native code and to take ownership of the returned value. Understanding the contract is the minimum
+  requirement for writing any native method, property, indexer, operator, or constructor.
+
+## What problem it solves
+
+  Native libraries sit between unmanaged C++ and the ShardScript virtual machine. The VM needs a stable,
+  type-erased way to hand arguments to C++ and to receive a value back. The callback contract solves three
+  problems at once:
+
+  - **Argument passing.** ShardScript objects, primitives, and references are all represented as `ObjectInstance*` pointers. The contract gives the callback a span of those pointers in the same order as the registered parameters.
+  - **Memory safety.** Arguments are borrowed from the caller. The callback must read them, but it must never delete them. Returned values are produced through the garbage collector so the VM owns them.
+  - **Uniform dispatch.** Static methods, instance methods, properties, indexers, operators, and constructors all use the same callback signature. The only difference is whether `context.Args[0]` is `this` or the first real argument.
+
+## How it works
+
+  The callback signature is fixed. A function pointer, a lambda, or any callable that matches this signature can
+  be passed to `.SetCallback(...)`.
+
+```cpp
+shard::ObjectInstance* Callback(const shard::CallState& context);
+```
+
+  The `CallState` structure carries everything the callback needs to interact with the
+  runtime:
+
+| Member | Type | Meaning |
+| --- | --- | ---
+| `context.Domain` | `ApplicationDomain&` | Application domain that owns the current call. |
+| `context.Program` | `ProgramVirtualImage&` | Compiled program image being executed. |
+| `context.Runtimer` | `VirtualMachine*` | The executing virtual machine. |
+| `context.Collector` | `GarbageCollector&` | Allocates and boxes return values. |
+| `context.Frame` | `CallStackFrame*` | Current stack frame; holds generic type arguments. |
+| `context.Method` | `MethodSymbol*` | Symbol of the method being invoked. |
+| `context.Args` | `std::span<ObjectInstance*>` | Borrowed argument pointers. |
+
+  **Argument indexing depends on linking.** For instance members,
+  `context.Args[0]` is `this` and real parameters begin at index
+  `1`. For static members, there is no implicit `this`; the first
+  real parameter is at index `0`.
+
+```cpp
+// Static method: first real argument is Args[0].
+ns.AddMethod(L"Double", TYPE_INT, LINK_STATIC, ACS_PUBLIC)
+    .AddParameter(L"value", TYPE_INT)
+    .SetCallback([](const CallState& context)
+    {
+        std::int64_t value = context.Args[0]->AsInteger();
+        return context.Collector.FromValue(value * 2);
+    });
+
+// Instance method: this is Args[0], first real argument is Args[1].
+cls.AddMethod(L"Add", TYPE_INT, LINK_INSTANCE, ACS_PUBLIC)
+    .AddParameter(L"other", TYPE_INT)
+    .SetCallback([](const CallState& context)
+    {
+        ObjectInstance* self = context.Args[0];
+        std::int64_t current = self->GetField(g_valueField->SlotIndex)->AsInteger();
+        std::int64_t other = context.Args[1]->AsInteger();
+        return context.Collector.FromValue(current + other);
+    });
+```
+
+  **Reading arguments.** Primitive values are extracted through helper methods on
+  `ObjectInstance`. Always guard reference-typed arguments against
+  `nullptr` or `GarbageCollector::NullInstance` before
+  dereferencing them.
+
+```cpp
+std::int64_t   i = context.Args[0]->AsInteger();
+double         d = context.Args[0]->AsDouble();
+bool           b = context.Args[0]->AsBoolean();
+wchar_t        c = context.Args[0]->AsCharacter();
+std::uint8_t   y = context.Args[0]->AsByte();
+const wchar_t* s = context.Args[0]->AsString();
+void*          p = context.Args[0]->AsNint();
+
+// Defensive check for a nullable string.
+ObjectInstance* name = context.Args[1];
+if (name == nullptr || name == GarbageCollector::NullInstance)
+{
+    return context.Collector.FromValue(std::wstring());
+}
+
+const wchar_t* nameText = name->AsString();
+```
+
+  **Returning values.** The callback returns a single `ObjectInstance*`. Use
+  the garbage collector to box primitives, allocate objects, or represent `void` with
+  `nullptr`. The returned object is owned by the VM; the callback must not free it.
+
+```cpp
+return context.Collector.FromValue(42);                 // int
+return context.Collector.FromValue(3.14);               // double
+return context.Collector.FromValue(true);               // bool
+return context.Collector.FromValue(L"hello");           // string
+return context.Collector.FromValue(std::wstring(...));  // string
+return context.Collector.FromNint(ptr, isTransient);    // nint
+return context.Collector.AllocateInstance(myClass);     // new class instance
+return context.Collector.AllocateArray(TYPE_INT, 10);   // new int[]
+return nullptr;                                         // void return
+```
+
+  **Native pointer ownership.** `FromNint` stores an unmanaged pointer as a
+  ShardScript `nint`. Pass `true` for `isTransient`
+  when the memory is owned by something outside the GC, such as an OS handle. Pass `false`
+  when the GC should eventually free the underlying memory.
+
+```cpp
+// External OS handle: GC must not free it.
+return context.Collector.FromNint(reinterpret_cast<void*>(fileHandle), true);
+
+// Library-owned allocation: GC may free it when the object dies.
+return context.Collector.FromNint(myLibraryBuffer, false);
+```
+
+## Key ideas
+
+  **Arguments are borrowed.** Every pointer in `context.Args` belongs to the
+  caller or to the garbage collector. Read from it, but never call `delete`,
+  `free`, or any destructor on an argument instance.
+
+  **Return values must be GC-owned.** The only safe return paths are through the collector helpers
+  or `nullptr` for `void`. Returning a pointer to a local variable,
+  a stack buffer, or a borrowed argument is undefined behavior.
+
+  **Strings need special care.** `AsString()` returns a pointer into a
+  GC-managed instance. If you need to keep the string after the callback returns, copy it into a
+  `std::wstring`.
+
+  **Instance methods shift the argument span.** Because `this` is inserted at
+  index `0`, it is easy to read a real parameter from the wrong offset. Match the
+  registered `LINK_INSTANCE` mode with index `1` and above.
+
+  **Convenience helper for static methods.** For simple static callbacks,
+  `GetArgs<T...>` in `<shard/runtime/NativeHelpers.hpp>`
+  reads primitive arguments in order and reduces boilerplate.
+
+```cpp
+static ObjectInstance* hypotenuse(const CallState& context)
+{
+    double a = 0.0;
+    double b = 0.0;
+
+    std::tie(a, b) = GetArgs<double, double>(context);
+
+    double result = std::sqrt((a * a) + (b * b));
+    return context.Collector.FromValue(result);
+}
+```
+
+<Info>
+Use `GetArgs` only when every argument is a primitive value in registration order. For
+  reference types, nullable values, or instance methods, read `context.Args` explicitly so
+  you can validate and borrow correctly.
+</Info>
+
+## When to use
+
+  - You are implementing a native method, property getter or setter, indexer, operator, or constructor.
+  - You need to translate between ShardScript objects and C++ primitives, strings, or native handles.
+  - You need to allocate a new object or array and hand ownership back to the VM.
+
+## When not to use
+
+  - The logic is pure ShardScript. Ordinary `.shard` source files already have the correct argument and return semantics and do not need manual borrowing.
+  - You want to hold onto an argument past the callback without pinning it. For async callbacks, use  `ObjectRef` to keep the object alive.
+  - You need to return a transient stack value or a raw pointer to local storage. These require collector allocation or transient `nint` boxing instead.
+
+## Related articles
+
+  - `library-building/shardlib-entrypoint` — how  `SHARDLIB_GETMETADATA` and `SHARDLIB_ENTRYPOINT` expose a native library to the runtime.
+  - `library-building/accessibility-and-linking` — how  `LINK_STATIC` and `LINK_INSTANCE` determine argument indexing.
+  - `library-building/headers-quick-reference` — which headers provide  `CallState`, `ObjectInstance`, and the collector helpers.
+  - `library-building/native-helpers-reference` — convenience helpers for constructing objects, invoking methods, and reading or writing fields and properties from native callbacks.
+  - `syntax/resource-management/01-garbage-collection` — the ShardScript GC model that makes borrowed arguments and collector-owned returns safe.
+  - `common-language-features/defer-and-idisposable` — patterns for native types that wrap unmanaged handles.

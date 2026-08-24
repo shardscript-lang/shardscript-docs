@@ -1,0 +1,332 @@
+---
+title: I/O & Lifecycle
+---
+
+## Summary
+
+  The `shard.subprocess` library lets a ShardScript program spawn external
+  processes and interact with their `stdin`,
+  `stdout`, and `stderr` streams. This page covers the
+  I/O redirection API, blocking read helpers, write helpers, process lifetime management
+  (`WaitForExit`, `Kill`), and deterministic cleanup
+  via `IDisposable` and `defer`.
+
+## Syntax
+
+  All I/O and lifecycle members belong to the `Process` class in the
+  `process` namespace. Configure redirection before launch by setting fields
+  on a `ProcessStartInfo` instance and passing it to
+  `Process.Start`.
+
+| Member | Signature | Description |
+| --- | --- | ---
+| `Process.Start` | `public static func Start(fileName: string) -> Process` | Spawns a process without redirection. |
+| `Process.Start` | `public static func Start(fileName: string, arguments: string) -> Process` | Spawns a process with a command-line argument string. |
+| `Process.Start` | `public static func Start(startInfo: ProcessStartInfo) -> Process` | Spawns a process using a fully configured start-info object. |
+| `ReadToEnd` | `public func ReadToEnd() -> string` | Reads the entire stdout pipe and returns it as a string. |
+| `ReadErrorToEnd` | `public func ReadErrorToEnd() -> string` | Reads the entire stderr pipe and returns it as a string. |
+| `Write` | `public func Write(text: string) -> void` | Writes text to the child process stdin pipe. |
+| `WriteLine` | `public func WriteLine(text: string) -> void` | Writes text followed by a newline to the child stdin pipe. |
+| `WaitForExit` | `public func WaitForExit() -> int` | Blocks until the child process terminates and returns its exit code. |
+| `WaitForExit` | `public func WaitForExit(timeoutMilliseconds: int) -> bool` | Polls until the process exits or the timeout elapses. |
+| `Kill` | `public func Kill() -> void` | Forcefully terminates the child process. |
+| `Dispose` | `public func Dispose() -> void` | Releases the native process handle and closes all pipes. |
+| `HasExited` | `public property HasExited: bool` | Returns true when the child process is no longer alive. |
+| `ExitCode` | `public property ExitCode: int` | Returns the last recorded exit code. |
+| `ProcessId` | `public property ProcessId: int` | Returns the OS process identifier. |
+
+  The `ProcessStartInfo` fields that control I/O and lifetime behavior are:
+
+| Field | Type | Default | Description |
+| --- | --- | --- | ---
+| `FileName` | string | `&quot;&quot;` | Executable or command to run. Required. |
+| `Arguments` | string | `&quot;&quot;` | Command-line arguments passed to the executable. |
+| `WorkingDirectory` | string | `&quot;&quot;` | Working directory for the child process. |
+| `RedirectStandardOutput` | bool | `false` | Create a pipe and capture stdout. |
+| `RedirectStandardError` | bool | `false` | Create a pipe and capture stderr. |
+| `RedirectStandardInput` | bool | `false` | Create a pipe and feed stdin. |
+| `CreateNoWindow` | bool | `false` | On Windows, hide the console window of the child. |
+| `InheritEnvironment` | bool | `true` | Inherit environment variables from the parent process. |
+| `EnvironmentVariables` | `Dictionary<string, string>` | empty | Additional or replacement environment variables. |
+| `UseShellExecute` | bool | `false` | Not supported; setting this to true throws at start time. |
+
+## Parameters / Arguments
+
+  The parameters for each I/O and lifecycle member are listed below.
+
+| Member | Parameter | Type | Description |
+| --- | --- | --- | ---
+| `Process.Start` | `fileName` | string | Path or name of the executable. The runtime searches PATH when the name is not absolute. |
+| `Process.Start` | `arguments` | string | Whitespace-separated argument string. Quotes preserve spaces; backslash escapes are applied by the underlying C runtime. |
+| `Process.Start` | `startInfo` | ProcessStartInfo | Configuration object that selects redirection, working directory, environment, and window behavior. |
+| `Write / WriteLine` | `text` | string | Text to send to the child stdin pipe. Converted to UTF-8 before writing. |
+| `WaitForExit(timeout)` | `timeoutMilliseconds` | int | Maximum time to wait. A negative value waits indefinitely. |
+
+## Returns
+
+| Member | Return Type | Meaning |
+| --- | --- | ---
+| `ReadToEnd` | string | The complete stdout output decoded from UTF-8. |
+| `ReadErrorToEnd` | string | The complete stderr output decoded from UTF-8. |
+| `WaitForExit()` | int | The child process exit code recorded by the OS. |
+| `WaitForExit(ms)` | bool | True if the process exited within the timeout; false if the timeout elapsed. |
+| `HasExited` | bool | True when the native process handle reports the process is no longer alive. |
+| `ExitCode` | int | The exit code recorded by the most recent WaitForExit call, or -1 after Kill. |
+| `ProcessId` | int | The OS-specific process identifier assigned at launch. |
+
+## Exceptions / Errors
+
+  - **Process start failure** —  `Process.Start` throws when the executable cannot be found, permission is denied, pipe creation fails, or the start-info object is invalid. The native error code is surfaced as part of the exception message.
+  - **UseShellExecute not supported** — Setting  `ProcessStartInfo.UseShellExecute = true` causes  `Process.Start` to throw immediately.
+  - **Invalid process handle** — Calling  `WaitForExit`, `Kill`,  `ReadToEnd`, `ReadErrorToEnd`, or  `Write` after the process has been disposed throws.
+  - **Stream not redirected** —  `ReadToEnd`, `ReadErrorToEnd`, and  `Write` throw if the corresponding  `RedirectStandard*` flag was not set before the process was started.
+  - **Timeout does not kill** —  `WaitForExit(ms)` returns `false` on timeout and leaves the process running. You must call `Kill` explicitly if you want termination.
+  - **Orphaned child on parent exit** — If the parent exits without calling `Dispose` or `Kill`, the child may continue running independently of the parent.
+
+## Remarks
+
+  **Redirection is configured before launch.** The runtime creates OS pipes only when
+  the corresponding `RedirectStandardOutput`,
+  `RedirectStandardError`, or
+  `RedirectStandardInput` field is set to `true` on
+  the `ProcessStartInfo` object. Attempting to read or write a stream that
+  was not redirected produces a runtime error.
+
+  **Blocking reads collect the entire stream.**
+  `ReadToEnd` and `ReadErrorToEnd` read in 4096-byte
+  chunks until the pipe closes, then call `WaitForExit` internally to reap
+  the child and update `ExitCode`. Because these calls block the calling
+  thread until the child closes its end of the pipe, they are not suitable for interactive or
+  streaming scenarios where you need to read while the process is still running.
+
+  **Writing to stdin.** `Write` converts the supplied string to
+  UTF-8 and writes it through `std::fwrite`, followed by an explicit
+  `std::fflush`. `WriteLine` performs the same write
+  and then appends a single `\n` byte. If you need to signal end-of-input to
+  a child that reads until EOF, close the pipe by disposing the `Process`
+  instance or by letting the deferred disposal run.
+
+  **Waiting and timeouts.** The parameterless `WaitForExit()`
+  blocks until the child terminates and returns the OS exit code. The timed overload polls the
+  native `subprocess_alive` function in a loop with 10 ms sleeps. A
+  negative timeout is treated as an indefinite wait. On timeout the method returns
+  `false` and does *not* terminate the child.
+
+  **Kill behavior.** `Kill` calls the native terminate function
+  (`TerminateProcess` on Windows, `SIGTERM` on POSIX),
+  sets `ExitCode` to `-1`, and marks the process as
+  exited. Calling `Kill` on an already-exited process is a no-op.
+
+  **IDisposable and defer.** `Process` implements
+  `IDisposable`. The recommended pattern is to declare the variable with
+  `defer`: `defer p: Process = Process.Start(...)`.
+  This guarantees that `Dispose` runs when the variable goes out of scope,
+  whether by normal return, early return, or exception. `Dispose` calls the
+  native destroy function, closes all pipe handles, frees the underlying
+  `subprocess_s` structure, and nulls the handle field. Calling
+  `Dispose` multiple times is safe.
+
+<Info>
+The native subprocess layer always enables asynchronous I/O internally so that blocking reads
+  can drain the pipe reliably. You do not need to set any async flag manually; just enable the
+  specific `RedirectStandard*` flags you need.
+</Info>
+
+## Examples
+
+  **Capture stdout and stderr separately.**
+
+// subprocess_capture.shard
+```csharp
+using stdio;
+using process;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    info: ProcessStartInfo = new ProcessStartInfo();
+    info.FileName = "cmd.exe";
+    info.Arguments = "/c echo stdout message & echo stderr message >&2";
+    info.RedirectStandardOutput = true;
+    info.RedirectStandardError = true;
+    info.CreateNoWindow = true;
+
+    defer p: Process = Process.Start(info);
+
+    outText: string = p.ReadToEnd();
+    errText: string = p.ReadErrorToEnd();
+
+    println("stdout: " + outText);
+    println("stderr: " + errText);
+    println("exit code: " + p.ExitCode);
+}
+```
+
+  **Feed input to a child process.**
+
+// subprocess_stdin.shard
+```csharp
+using stdio;
+using process;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    info: ProcessStartInfo = new ProcessStartInfo();
+    info.FileName = "cmd.exe";
+    info.Arguments = "/c sort";
+    info.RedirectStandardInput = true;
+    info.RedirectStandardOutput = true;
+    info.CreateNoWindow = true;
+
+    defer p: Process = Process.Start(info);
+
+    // Send three lines to the sort utility.
+    p.WriteLine("cherry");
+    p.WriteLine("apple");
+    p.WriteLine("banana");
+
+    // Closing stdin signals EOF; defer will dispose the process at scope exit.
+    sorted: string = p.ReadToEnd();
+
+    println("sorted output:");
+    println(sorted);
+    println("exit code: " + p.ExitCode);
+}
+```
+
+  **Enforce a timeout and kill a long-running process.**
+
+// subprocess_timeout.shard
+```csharp
+using stdio;
+using process;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // On Windows this command sleeps for about 5 seconds.
+    defer p: Process = Process.Start("cmd.exe", "/c ping 127.0.0.1 -n 6 > nul");
+
+    finished: bool = p.WaitForExit(250);
+    if (!finished)
+    {
+        println("Timeout reached — terminating process.");
+        p.Kill();
+    }
+    else
+    {
+        println("Process finished on time.");
+    }
+
+    println("Has exited: " + p.HasExited);
+    println("Exit code: " + p.ExitCode);
+}
+```
+
+  **Check exit status after capturing output.**
+
+// subprocess_exitcode.shard
+```csharp
+using stdio;
+using process;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    info: ProcessStartInfo = new ProcessStartInfo();
+    info.FileName = "cmd.exe";
+    info.Arguments = "/c exit 42";
+    info.RedirectStandardOutput = true;
+    info.CreateNoWindow = true;
+
+    defer p: Process = Process.Start(info);
+
+    output: string = p.ReadToEnd();
+    code: int = p.WaitForExit();
+
+    if (code != 0)
+    {
+        println("Command failed with exit code " + code);
+    }
+    else
+    {
+        println("Command succeeded");
+    }
+
+    println("Captured output: '" + output + "'");
+}
+```
+
+<Warning title="Common mistake: reading after dispose">
+Do not call `ReadToEnd` or `Kill` after the deferred
+  `Process` variable has gone out of scope. The handle is released on scope
+  exit, and subsequent member access throws. Keep all reads, writes, and waits inside the same
+  scope as the `defer` declaration.
+</Warning>
+
+  **Environment variables and working directory.**
+
+// subprocess_env.shard
+```csharp
+using stdio;
+using process;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    info: ProcessStartInfo = new ProcessStartInfo();
+    info.FileName = "cmd.exe";
+    info.Arguments = "/c echo %MY_VAR%";
+    info.RedirectStandardOutput = true;
+    info.CreateNoWindow = true;
+
+    // Replace inherited environment with a custom one.
+    info.InheritEnvironment = false;
+    info.EnvironmentVariables.Add("MY_VAR", "hello from shard");
+
+    defer p: Process = Process.Start(info);
+
+    output: string = p.ReadToEnd();
+    println(output);
+    println("PID: " + p.ProcessId);
+}
+```
+
+  **Run a simple command without redirection.**
+
+// subprocess_simple.shard
+```csharp
+using stdio;
+using process;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // When no redirection is needed, use the two-argument overload.
+    defer p: Process = Process.Start("cmd.exe", "/c echo hello");
+
+    code: int = p.WaitForExit();
+    println("Process exited with code " + code);
+}
+
+## See also
+
+  - [`Process &amp; ProcessStartInfo`](/stdlib/subprocess/process-and-processstartinfo) — launching processes and configuring start-info fields.
+  - [`Environment`](/stdlib/environment/environment) — reading and writing environment variables passed to child processes.
+  - [`Console I/O`](/stdlib/constream/console-io) — `stdio` helpers for printing captured output.
+
+## Source
+
+  The subprocess implementation ships as part of `ShardScript.Framework`. The native
+  binding for `Process`, `ProcessStartInfo`, and related I/O helpers
+  is in `ShardScript.Framework/system/subprocess.shard.cpp`.
+
+```

@@ -1,0 +1,50 @@
+---
+title: Random Number Generation
+---
+
+The `math.random` shard adds a static `Random` class
+  to the `math` namespace. It wraps a Mersenne Twister engine seeded from
+  `std::random_device` and provides overloads for both integer and floating-point
+  ranges.
+
+// random_basic.shard
+```csharp
+using stdio;
+using math;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    println(Random.Integer(1, 6));      // roll a die
+    println(Random.Double());           // 0.0 .. 1.0
+    println(Random.Propably(50.0));     // coin flip
+}
+```
+
+## API Reference
+
+| Member | Return | Description |
+| --- | --- | ---
+| `Integer()` | int | Returns a random 64-bit integer across the full signed range. |
+| `Integer(top)` | int | Currently ignores top and returns a random integer in [0, INT_MAX]. |
+| `Integer(bottom, top)` | int | Returns a random integer in [bottom, top]. Both bounds are cast to 32-bit int, so large 64-bit ranges are truncated. |
+| `Double()` | double | Returns a random double in [0.0, 1.0). |
+| `Double(top)` | double | Returns a random double in [0.0, top). |
+| `Double(bottom, top)` | double | Returns a random double in [bottom, top). |
+| `Propably(chance)` | bool | Returns true with the given percentage chance (0..100). |
+
+<Info>
+Every call creates a fresh `std::mt19937` generator. For reproducible
+  sequences (e.g., deterministic game seeds), a seedable API is not yet exposed.
+</Info>
+
+## See also
+
+  - [`Basic Math`](/stdlib/math/basic-math) — constants and arithmetic helpers on the `Math` class.
+
+## Source
+
+  The `math.random` shard ships as part of
+  `ShardScript.Framework`. The native binding for the static `Random`
+  class is in `ShardScript.Framework/system/math.random.shard.cpp`.

@@ -1,0 +1,115 @@
+---
+title: Virtual Machine Internals
+---
+
+## Summary
+
+  The ShardScript virtual machine is a custom stack-based interpreter that executes the bytecode produced by
+  the compiler. It manages evaluation stacks, local slots, call frames, exception handlers, deferred
+  expressions, and reference-counted object lifetimes.
+
+## What problem it solves
+
+  A compiled language needs a compact, embeddable runtime. Rather than depending on a large external runtime
+  or JIT compiler, ShardScript ships a small stack VM that hosts can initialize, run, and tear down within
+  their own process.
+
+## How it works
+
+  Execution is performed by the `VirtualMachine`, a classic stack machine: arithmetic
+  and calls consume their operands from the top of an evaluation stack and push their results back. Locals
+  live in a separate, slot-indexed area, not on the operand stack.
+
+  The dispatch loop lives in the VM&apos;s `ProcessCode` routine — one large
+  `switch` over the `OpCode` enum whose cases are the instruction
+  groups.
+
+// dispatch.txt
+```text
+while not end of bytecode stream:
+    opcode <- decode next opcode (and its operands)
+    switch (opcode) -> act on the current frame's eval stack
+```
+
+  Every active method call gets a `CallStackFrame`. A frame holds:
+
+  - **Evaluation stack** — a stack of `ObjectInstance*` values that opcodes push and pop.
+  - **Locals** — a slot-indexed region using the offsets the emitter assigned.
+  - **Type arguments** — in force for generic methods.
+  - **Exception-handler stack** — recording protected (`try`) regions and their dispatch offsets.
+  - **Defer stack** — the deferred expressions registered in this scope.
+  - **Pending-task counter** — keeps the frame alive while async work it started is still outstanding.
+
+  Calls push a new frame and transfer arguments; `RETURN` pops it, leaving the return
+  value (if any) on the caller&apos;s evaluation stack.
+
+  **Garbage collection.** Values are garbage-collected `ObjectInstance`
+  objects. The collector is reference-counting with object tracking: every value carries a reference count the
+  VM updates as it is stored in and removed from slots, fields, and stacks, and the instance is reclaimed when
+  the count reaches zero.
+
+## Key ideas
+
+  - **Stack discipline.** Operand consumption and result pushing are strictly defined for every opcode.
+  - **Reference counting.** Most objects are reclaimed immediately when their last reference disappears.
+  - **Frame isolation.** Each call gets its own locals and evaluation stack, preventing cross-call corruption.
+
+## When to use / When not to use
+
+| Use | Avoid |
+| --- | ---
+| Read this article when embedding the VM or debugging runtime behavior. | Do not implement performance-critical algorithms by hand-tuning bytecode; write native libraries instead. |
+
+## Undefined behaviour
+
+  Undefined behaviour in ShardScript is any program action for which the language and virtual machine
+  make no guarantee. Code that triggers undefined behaviour may crash, produce incorrect results,
+  behave differently between runs, or appear to work until surrounding code changes.
+
+  Explicitly calling out undefined behaviour helps programmers distinguish between errors that are
+  guaranteed to throw a catchable exception and errors that the VM is allowed to handle arbitrarily.
+  It also documents the boundaries where the current implementation is incomplete or where native
+  interop hands responsibility back to the programmer.
+
+  The ShardScript compiler and runtime validate many error conditions: type mismatches are caught at
+  compile time, array bounds and null dereferences are checked at runtime, and division by zero on
+  integers throws `DivideByZeroException`. Operations that fall outside the
+  validated set are undefined. The VM may still detect some of them, but programs must not rely on
+  any specific failure mode.
+
+| Category | Example | Why it is undefined |
+| --- | --- | ---
+| Incomplete features | Capturing a local variable in a lambda that escapes its scope | The compiler parses the capture but the VM does not lift locals to the heap. |
+| Incomplete features | Using compound assignment operators such as += | The parser accepts the syntax but the VM emits only a plain assignment. |
+| Switch expressions | A switch expression with no matching arm and no default | No handler is selected and no value is produced. |
+| Native interop | Reading past the end of a pinned native buffer | The VM cannot check bounds outside managed memory. |
+| Native interop | Passing a mismatched pointer width to a native call | The signature is trusted; incorrect sizes corrupt the call stack. |
+| Object lifetime | Returning a borrowed argument pointer after the call returns | The GC may move or collect the backing object. |
+| Reflection | Modifying internal VM state through undocumented APIs | Invariants assumed by the compiler and GC may be violated. |
+
+  **Undefined is not the same as unspecified.** Unspecified behaviour is guaranteed to
+  be safe but may vary between implementations. Undefined behaviour carries no guarantee at all.
+
+  **Current implementation details can mask bugs.** A program with undefined behaviour
+  may run correctly today and fail after a compiler or runtime update.
+
+  **Native boundaries are the highest risk.** Once execution crosses into a native
+  library, the VM can no longer enforce memory safety or type safety. Native code must uphold the
+  contracts documented in the native-library guides.
+
+  **Defensive coding removes ambiguity.** Adding default arms to switch expressions,
+  checking pointers and lengths, and avoiding incomplete features keeps behaviour defined.
+
+  **When to accept undefined behaviour.** In rare performance-critical paths, a
+  programmer may intentionally rely on implementation-defined behaviour, but such code should be
+  isolated, documented, and covered by tests that run on the exact target runtime.
+
+  **When to avoid undefined behaviour.** Almost always. Production ShardScript code
+  should stay within the validated subset of the language. If a construct is marked as incomplete in
+  the documentation, use the recommended workaround until it is fully implemented.
+
+## Related articles
+
+  - `Compiler Pipeline` — how the VM&apos;s input is produced.
+  - `Bytecode and OpCodes` — the instruction set executed by the VM.
+  - `Event Loop and libuv` — how async work is scheduled around the VM.

@@ -1,0 +1,361 @@
+---
+title: Constructors and Initialization
+---
+
+## Summary
+
+  A **constructor** in ShardScript is an instance method named `init`
+  that runs once for every newly created object. The `new` expression allocates
+  the instance on the garbage-collected heap, zero-initializes every field slot, and then invokes the
+  constructor overload whose parameters match the supplied arguments.
+
+## Syntax
+
+  Constructors are declared without a return type. The canonical name is `init`;
+  a class-named constructor is still accepted by the parser for compatibility, but new code should use
+  `init`.
+
+// constructor_syntax.shard
+```csharp
+// Constructor declaration.
+[access-modifier] init(parameter: Type, ...)
+{
+    // Initialize fields, validate arguments, acquire resources, etc.
+}
+
+// Object creation.
+new TypeName(argument, ...)
+new TypeName<TypeArgument>(argument, ...)
+```
+
+  A constructor is invoked by writing `new` followed by the type name and an
+  argument list. The resulting reference can be assigned to a variable, passed as an argument, or used
+  as a receiver immediately:
+
+// constructor_usage.shard
+```csharp
+// Explicitly typed binding.
+p: Point = new Point(3, 4);
+
+// Used directly as a receiver.
+area: double = new Rectangle(5.0, 4.0).Area;
+```
+
+## Parameters / Arguments
+
+| Form | Parameter / Argument Rules |
+| --- | ---
+| `init` parameters | Typed, comma-separated, exactly like a normal method parameter list. The implicit `this` reference occupies evaluation-stack slot 0, so the first declared parameter is stored in slot 1. |
+| `new` arguments | Must match one declared constructor overload in both count and types. The compiler resolves the overload at compile time. |
+| `new Type()` | Calls the parameterless constructor. If the class declares no constructors, the compiler generates a public parameterless constructor automatically. |
+| `new Type<T>()` | For generic types, supply the type argument list between the type name and the argument list. |
+
+## Returns
+
+| Construct | Return |
+| --- | ---
+| `init` body | No return type. The method implicitly returns the fully initialized instance to the `new` expression. |
+| `new Type(...)` | A reference to the newly allocated and initialized instance. |
+
+## Exceptions / Errors
+
+  - **No matching constructor** —  `new Type(args)` fails at compile time if no overload accepts the supplied argument count and types.
+  - **Inaccessible constructor** — A  `private` constructor can only be called from code inside the declaring type. Calling it from another type produces an accessibility error.
+  - **Static constructor** — Constructors cannot be declared with `static`. Use a static field or static method for type-level initialization.
+  - **Return type on constructor** — Writing  `init(...) -> Type` is invalid syntax; constructors never declare a return type.
+  - **Read-only auto-property assigned outside init** — An auto-property with only a getter can be assigned inside `init`, but assigning to it from an ordinary method produces a compile error.
+  - **Argument validation at runtime** — A constructor body is ordinary ShardScript code; throwing from `init` leaves the object partially initialized and propagates the exception to the `new` call site.
+
+## Remarks
+
+  **Default constructor.** If a class declares no constructor at all, the compiler
+  synthesizes a public parameterless `init()` with an empty body. The moment you
+  declare any constructor, the implicit default constructor disappears; if you still need a
+  parameterless form, declare it explicitly.
+
+  **Overload resolution.** Multiple `init` overloads are allowed.
+  Resolution is performed at compile time using the argument count and types. There is no implicit
+  fallback or coercion beyond the normal assignability rules, so ambiguous calls are reported as
+  compile-time errors.
+
+  **Object allocation order.** The bytecode for `new` emits the
+  `NEWOBJECT` opcode. The VM first allocates a GC object whose field slots are
+  zeroed (reference fields are `null`, numeric fields are `0`
+  ), then pushes the constructor arguments and calls the matching `init`. Inside
+  the constructor, `this` already refers to that object, so fields can be
+  populated with `STOREFIELD` instructions. After `init`
+  returns, the initialized reference is left on the caller's evaluation stack.
+
+  **Read-only auto-properties in init.** An auto-property declared with only a getter has no
+  setter method, but the compiler allows a direct write to its compiler-generated backing field inside
+  the constructor. Once construction finishes, the property becomes read-only for the lifetime of the
+  object.
+
+<Warning title="Field initializers are not yet emitted">
+Field declarations may include an initializer expression, e.g.
+  `public Count: int = 0;`. The parser and semantic binder recognize the syntax
+  and type-check the expression, but the current emitter does not inject that expression into
+  constructors or static storage. Until this is implemented, initialize fields explicitly inside
+  `init` or in ordinary assignment statements. Relying on a field initializer
+  currently leaves the field at its zero-initialized default at runtime.
+</Warning>
+
+<Warning title="Constructor chaining is not implemented">
+ShardScript does not support `init(...) : this(...)` or
+  `init(...) : base(...)` initializer syntax. To share setup logic, extract a
+  private method and call it from each constructor overload.
+</Warning>
+
+  **Static constructors.** The language has no special static constructor construct. Static
+  fields are initialized by the runtime when first accessed, and static methods can perform any
+  type-level setup. Declaring `static init(...)` is rejected by the compiler.
+
+  **Avoid leaking `this` during construction.** Because
+  `this` is available inside `init`, it is possible to pass
+  the partially constructed object to another method or store it in a static collection before all
+  fields are set. Doing so is a common source of bugs and should be avoided.
+
+## Examples
+
+  **Basic constructor and object creation.**
+
+// constructor_basic.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Counter
+{
+    public Name: string;
+    public Count: int;
+
+    public init(name: string)
+    {
+        this.Name = name;
+        this.Count = 0;
+    }
+
+    public func Step() -> void
+    {
+        this.Count = this.Count + 1;
+        println(this.Name + ": " + this.Count);
+    }
+}
+
+public static func Main() -> void
+{
+    c: Counter = new Counter("clicks");
+    c.Step();   // clicks: 1
+    c.Step();   // clicks: 2
+}
+```
+
+  **Default constructor when none is declared.**
+
+// constructor_default.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Buffer
+{
+    // No init is declared, so the compiler provides public init().
+    public Data: string;
+}
+
+public static func Main() -> void
+{
+    b: Buffer = new Buffer();
+    b.Data = "hello";
+    println(b.Data);   // hello
+}
+```
+
+  **Multiple constructor overloads.**
+
+// constructor_overloads.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Point
+{
+    public X: int;
+    public Y: int;
+    public Label: string;
+
+    // Parameterless overload: useful when defaults are known.
+    public init()
+    {
+        this.X = 0;
+        this.Y = 0;
+        this.Label = "origin";
+    }
+
+    // Coordinate-only overload.
+    public init(x: int, y: int)
+    {
+        this.X = x;
+        this.Y = y;
+        this.Label = "point";
+    }
+
+    // Fully specified overload.
+    public init(x: int, y: int, label: string)
+    {
+        this.X = x;
+        this.Y = y;
+        this.Label = label;
+    }
+}
+
+public static func Main() -> void
+{
+    a: Point = new Point();
+    b: Point = new Point(3, 4);
+    c: Point = new Point(3, 4, "target");
+
+    println(a.Label + " (" + a.X + ", " + a.Y + ")");   // origin (0, 0)
+    println(b.Label + " (" + b.X + ", " + b.Y + ")");   // point (3, 4)
+    println(c.Label + " (" + c.X + ", " + c.Y + ")");   // target (3, 4)
+}
+```
+
+  **Private constructor used by a factory method.**
+
+// constructor_private.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Session
+{
+    public Id: int;
+
+    // External code cannot call this directly.
+    private init(id: int)
+    {
+        this.Id = id;
+    }
+
+    public static func Create(id: int) -> Session
+    {
+        // A private constructor is accessible inside the declaring type.
+        return new Session(id);
+    }
+}
+
+public static func Main() -> void
+{
+    s: Session = Session.Create(42);
+    println(s.Id);   // 42
+
+    // Session s2 = new Session(7);   // ERROR: constructor is private
+}
+```
+
+  **Initializing a read-only auto-property in init.**
+
+// constructor_readonly_property.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Invoice
+{
+    // Read-only outside the constructor.
+    public Number: string { get; }
+
+    public init(number: string)
+    {
+        this.Number = number;
+    }
+}
+
+public static func Main() -> void
+{
+    inv: Invoice = new Invoice("INV-2025-001");
+    println(inv.Number);   // INV-2025-001
+
+    // inv.Number = "other";   // ERROR: property has no setter
+}
+```
+
+  **Shared initialization helper instead of constructor chaining.**
+
+// constructor_helper.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Rectangle
+{
+    public Width: double;
+    public Height: double;
+    public Area: double;
+
+    // Common setup factored into a private method.
+    private func Initialize(w: double, h: double) -> void
+    {
+        this.Width = w;
+        this.Height = h;
+        this.Area = w * h;
+    }
+
+    public init(width: double, height: double)
+    {
+        this.Initialize(width, height);
+    }
+
+    public init(size: double)
+    {
+        // Reuse the same helper to create a square.
+        this.Initialize(size, size);
+    }
+}
+
+public static func Main() -> void
+{
+    r1: Rectangle = new Rectangle(5.0, 4.0);
+    r2: Rectangle = new Rectangle(3.0);
+
+    println(r1.Area);   // 20.0
+    println(r2.Area);   // 9.0
+}
+```
+
+  **Common mistakes.**
+
+// constructor_mistakes.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Widget
+{
+    public Id: int;
+
+    public init(id: int)
+    {
+        this.Id = id;
+    }
+}
+
+public static func Main() -> void
+{
+    // CORRECT: argument type and count match the constructor.
+    w: Widget = new Widget(7);
+    println(w.Id);   // 7
+
+    // INCORRECT: these would fail at compile time.
+    // Widget a = new Widget();         // ERROR: no parameterless constructor
+    // Widget b = new Widget("seven");  // ERROR: type mismatch
+}
+```

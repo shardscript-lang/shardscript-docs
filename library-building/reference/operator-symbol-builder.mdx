@@ -1,0 +1,292 @@
+---
+title: OperatorSymbol Builder
+---
+
+## Summary
+
+  The `OperatorSymbol` builder registers custom operator and cast behavior for a
+  `ClassSymbol` or `StructSymbol`. Inside
+  `SHARDLIB_ENTRYPOINT` you call `AddOperator` to bind a
+  ShardScript operator token&mdash;such as `+`, `-`, or
+  `==`&mdash;to a native C++ callback, or `AddCastOperator` to
+  implement the `as` cast. The runtime invokes the callback whenever ShardScript code
+  applies that operator to values of the registered type.
+
+## Syntax
+
+  Operator symbols are created from a `SymbolBuilder<ClassSymbol>` or
+  `SymbolBuilder<StructSymbol>`. The returned
+  `SymbolBuilder<OperatorSymbol>` is then configured with parameters and a
+  callback.
+
+```cpp
+SymbolBuilder<OperatorSymbol> AddOperator(
+    TokenType opToken,
+    TypeSymbol* returnType,
+    SymbolLinking linking,
+    SymbolAccesibility access = SymbolAccesibility::Public);
+
+SymbolBuilder<OperatorSymbol> AddCastOperator(
+    TypeSymbol* targetType,
+    SymbolLinking linking = LINK_STATIC,
+    SymbolAccesibility access = SymbolAccesibility::Public);
+
+SymbolBuilder<OperatorSymbol>& AddParameter(
+    const std::wstring& name,
+    TypeSymbol* type);
+
+SymbolBuilder<OperatorSymbol>& SetCallback(
+    MethodSymbolDelegate callback);
+```
+
+  A typical registration chain looks like this:
+
+```cpp
+type.AddOperator(shard::TokenType::AddOperator, myType, LINK_STATIC)
+    .AddParameter(L"left", myType)
+    .AddParameter(L"right", myType)
+    .SetCallback(&my_add_callback);
+
+type.AddCastOperator(TYPE_STRING, LINK_STATIC)
+    .AddParameter(L"value", myType)
+    .SetCallback(&my_cast_callback);
+```
+
+## Parameters / Arguments
+
+| Parameter | Type | Description |
+| --- | --- | ---
+| `opToken` | `shard::TokenType` | The operator token to overload, such as TokenType::AddOperator or TokenType::EqualsOperator. |
+| `returnType` | `TypeSymbol*` | The type the operator expression evaluates to. |
+| `targetType` | `TypeSymbol*` | For AddCastOperator, the destination type of the as cast. |
+| `linking` | `SymbolLinking` | LINK_STATIC for static operators; LINK_INSTANCE when context.Args[0] is this. |
+| `access` | `SymbolAccesibility` | Visibility of the operator. Defaults to ACS_PUBLIC. |
+
+  **OperatorSymbol chain methods**
+
+| Method | Description |
+| --- | ---
+| `AddParameter(name, type)` | Adds one operand parameter. The order must match the operand order in ShardScript source. |
+| `SetCallback(callback)` | Attaches the native callback that implements the operator. Required for the operator to run. |
+
+  **Common operator token constants**
+
+| ShardScript operator | TokenType constant |
+| --- | ---
+| `+` | `TokenType::AddOperator` |
+| `-` | `TokenType::SubOperator` |
+| `*` | `TokenType::MultOperator` |
+| `/` | `TokenType::DivOperator` |
+| `%` | `TokenType::ModOperator` |
+| `==` | `TokenType::EqualsOperator` |
+| `!=` | `TokenType::NotEqualsOperator` |
+| `<` | `TokenType::LessOperator` |
+| `>` | `TokenType::GreaterOperator` |
+| `.` | `TokenType::Delimeter` |
+| `as` | `TokenType::AsOperator` |
+
+## Returns
+
+| Call | Return type | Description |
+| --- | --- | ---
+| `AddOperator` | `SymbolBuilder<OperatorSymbol>` | A builder for the new operator symbol. |
+| `AddCastOperator` | `SymbolBuilder<OperatorSymbol>` | A builder for an as cast operator symbol. |
+| `AddParameter` | `SymbolBuilder<OperatorSymbol>&` | The same builder, for fluent chaining. |
+| `SetCallback` | `SymbolBuilder<OperatorSymbol>&` | The same builder, for fluent chaining. |
+| `callback` | `shard::ObjectInstance*` | The native callback must return the boxed operator result. |
+
+## Exceptions / Errors
+
+  - **Missing callback** — An operator registered without  `SetCallback(...)` resolves at compile time but has no native implementation. The call runs but does nothing useful and may return null.
+  - **Parameter count mismatch** — The number of  `AddParameter` calls must match the arity of the ShardScript operator. Binary operators need two parameters; cast operators need one source parameter.
+  - **Linking mismatch** — For `LINK_INSTANCE`  operators, `context.Args[0]` is the left-hand instance and the first real operand is at `context.Args[1]`. Reading the wrong index produces wrong results or a crash.
+  - **Return type mismatch** — The operator&apos;s registered return type must match what the callback actually returns. Returning a string when the operator is declared to return `int` causes a runtime type error.
+  - **Ambiguous overload** — Two operators with the same token and the same operand types produce a semantic overload-resolution error.
+  - **Private operator called externally** — Operators registered with `ACS_PRIVATE` cannot be invoked from ShardScript code outside the visibility boundary.
+
+## Remarks
+
+  **Static versus instance operators.** A static operator has no implicit
+  `this`; both operands are passed as real arguments. An instance operator binds to the
+  type of the left-hand operand, so `context.Args[0]` is the left-hand instance and the
+  right-hand operand follows. Most binary operators are registered as static because the compiler can resolve
+  them from either operand&apos;s type; instance linking is useful when the operator logically mutates or reads
+  instance state.
+
+  **Cast operators.** `AddCastOperator(targetType)` is a convenience that
+  creates an operator using `TokenType::AsOperator` with the given return type. The
+  callback receives the source value as `context.Args[0]` and must return a value of the
+  target type. You can also call `AddOperator(TokenType::AsOperator, targetType, ...)`
+  directly.
+
+<Info title="Native library shape">
+A ShardScript native library is any shared library (`.dll` on Windows, `.so` on Linux, `.dylib` on macOS) that exports the two C-linkage symbols `ShardLib_GetMetadata` and `ShardLib_EntryPoint`. It can be built from one or many C++ source files, live inside `ShardScript.Framework` or in a completely separate project, and links against the ShardScript runtime shared library using headers from `ShardScript/include`. For the full registration contract, see `native-library-overview.mdx`.
+</Info>
+
+<Info>
+Match operand order exactly. The compiler maps `left + right` to the parameter list in
+  the order you registered it. Swapping `AddParameter(L&quot;left&quot;, ...)` and
+  `AddParameter(L&quot;right&quot;, ...)` changes the semantic meaning of the operator.
+</Info>
+
+<Warning title="Delimeter overloads are for dynamic member access">
+Overloading `TokenType::Delimeter` lets a static type intercept dot access, such as
+  reading environment variables by name. Ordinary field and property access does not require a delimeter
+  operator.
+</Warning>
+
+## Examples
+
+  **Vector2 operators and cast.** The following library registers a `Vector2`
+  type with addition, subtraction, equality, and a cast to `string`. The subtraction
+  operator uses instance linking so `context.Args[0]` is the left-hand vector.
+
+// math.shard.cpp
+```cpp
+#include <ShardScript.hpp>
+
+using namespace shard;
+
+static ClassSymbol* g_vectorClass = nullptr;
+static FieldSymbol* g_xField = nullptr;
+static FieldSymbol* g_yField = nullptr;
+
+static ObjectInstance* vector_add(const CallState& context)
+{
+    ObjectInstance* left = context.Args[0];
+    ObjectInstance* right = context.Args[1];
+
+    double x1 = left->GetField(g_xField->SlotIndex)->AsDouble();
+    double y1 = left->GetField(g_yField->SlotIndex)->AsDouble();
+    double x2 = right->GetField(g_xField->SlotIndex)->AsDouble();
+    double y2 = right->GetField(g_yField->SlotIndex)->AsDouble();
+
+    ObjectInstance* result = context.Collector.AllocateInstance(g_vectorClass);
+    result->SetField(g_xField->SlotIndex, context.Collector.FromValue(x1 + x2));
+    result->SetField(g_yField->SlotIndex, context.Collector.FromValue(y1 + y2));
+    return result;
+}
+
+static ObjectInstance* vector_subtract(const CallState& context)
+{
+    // LINK_INSTANCE: this is Args[0], the right operand is Args[1].
+    ObjectInstance* self = context.Args[0];
+    ObjectInstance* other = context.Args[1];
+
+    double x1 = self->GetField(g_xField->SlotIndex)->AsDouble();
+    double y1 = self->GetField(g_yField->SlotIndex)->AsDouble();
+    double x2 = other->GetField(g_xField->SlotIndex)->AsDouble();
+    double y2 = other->GetField(g_yField->SlotIndex)->AsDouble();
+
+    ObjectInstance* result = context.Collector.AllocateInstance(g_vectorClass);
+    result->SetField(g_xField->SlotIndex, context.Collector.FromValue(x1 - x2));
+    result->SetField(g_yField->SlotIndex, context.Collector.FromValue(y1 - y2));
+    return result;
+}
+
+static ObjectInstance* vector_equals(const CallState& context)
+{
+    ObjectInstance* left = context.Args[0];
+    ObjectInstance* right = context.Args[1];
+
+    double x1 = left->GetField(g_xField->SlotIndex)->AsDouble();
+    double y1 = left->GetField(g_yField->SlotIndex)->AsDouble();
+    double x2 = right->GetField(g_xField->SlotIndex)->AsDouble();
+    double y2 = right->GetField(g_yField->SlotIndex)->AsDouble();
+
+    bool equal = (x1 == x2) && (y1 == y2);
+    return context.Collector.FromValue(equal);
+}
+
+static ObjectInstance* vector_to_string(const CallState& context)
+{
+    ObjectInstance* value = context.Args[0];
+
+    double x = value->GetField(g_xField->SlotIndex)->AsDouble();
+    double y = value->GetField(g_yField->SlotIndex)->AsDouble();
+
+    std::wstring text = L"(" + std::to_wstring(x) + L", " + std::to_wstring(y) + L")";
+    return context.Collector.FromValue(text);
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> math(context, L"math");
+
+    SymbolBuilder<ClassSymbol> vectorClass = math.AddClass(L"Vector2", ACS_PUBLIC, LINK_INSTANCE);
+    g_vectorClass = vectorClass.Get();
+
+    g_xField = vectorClass.AddField(L"X", TYPE_DOUBLE, LINK_INSTANCE, ACS_PUBLIC);
+    g_yField = vectorClass.AddField(L"Y", TYPE_DOUBLE, LINK_INSTANCE, ACS_PUBLIC);
+
+    vectorClass.AddInit()
+        .AddParameter(L"x", TYPE_DOUBLE)
+        .AddParameter(L"y", TYPE_DOUBLE)
+        .SetCallback([](const CallState& context)
+        {
+            ObjectInstance* self = context.Args[0];
+            self->SetField(g_xField->SlotIndex, context.Args[1]);
+            self->SetField(g_yField->SlotIndex, context.Args[2]);
+            return self;
+        });
+
+    vectorClass.AddOperator(shard::TokenType::AddOperator, g_vectorClass, LINK_STATIC)
+        .AddParameter(L"left", g_vectorClass)
+        .AddParameter(L"right", g_vectorClass)
+        .SetCallback(&vector_add);
+
+    vectorClass.AddOperator(shard::TokenType::SubOperator, g_vectorClass, LINK_INSTANCE)
+        .AddParameter(L"other", g_vectorClass)
+        .SetCallback(&vector_subtract);
+
+    vectorClass.AddOperator(shard::TokenType::EqualsOperator, TYPE_BOOL, LINK_STATIC)
+        .AddParameter(L"left", g_vectorClass)
+        .AddParameter(L"right", g_vectorClass)
+        .SetCallback(&vector_equals);
+
+    vectorClass.AddCastOperator(TYPE_STRING, LINK_STATIC)
+        .AddParameter(L"value", g_vectorClass)
+        .SetCallback(&vector_to_string);
+}
+```
+
+  ShardScript usage:
+
+```csharp
+using stdio;
+using math;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    a: Vector2 = new Vector2(1.0, 2.0);
+    b: Vector2 = new Vector2(3.0, 4.0);
+
+    c: Vector2 = a + b;
+    d: Vector2 = a - b;
+
+    text: string = c as string;
+    println(text);
+
+    if (c == d)
+    {
+        println("equal");
+    }
+    else
+    {
+        println("different");
+    }
+}
+```
+
+## See also
+
+  - [`library-building/class-symbol-builder`](/library-building/reference/class-symbol-builder) — registering the operand type.
+  - [`library-building/method-symbol-builder`](/library-building/reference/method-symbol-builder) — registering named methods.
+  - [`library-building/working-with-objects`](/library-building/how-to/working-with-objects) — allocating objects in operator callbacks.
+
+## Source
+
+  The native side of this API is implemented in `shard/semantic/SymbolBuilder.hpp`.
+  View the source on GitHub: `https://github.com/Rikitav/ShardScript/blob/main/ShardScript/include/shard/semantic/SymbolBuilder.hpp`.

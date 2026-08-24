@@ -1,0 +1,103 @@
+---
+title: Building from Source
+---
+
+## Prerequisites
+
+  - A C++20 toolchain: MSVC on Windows or GCC/Clang on Linux.
+  - `CMake` 3.31.6 or later and a compatible generator such as Ninja or Make.
+  - Git, to clone the ShardScript repository and its third-party dependencies.
+  - Enough disk space for the compiler, VM, standard shards, and optional third-party shards.
+
+## Goal
+
+  Build the `shard` interpreter and every standard shard from the ShardScript
+  repository source. After the build you will have a working interpreter executable and a
+  `system/` directory containing the standard shard DLLs.
+
+## Step-by-Step Instructions
+
+  **1. Clone the repository.**
+
+// clone.sh
+```bash
+git clone https://github.com/Rikitav/ShardScript.git
+cd ShardScript
+```
+
+  **2. Configure the build.**
+
+  ShardScript is written in C++20 and built with CMake. The repository is set up for MSVC and Ninja on
+  Windows, and for GCC/Clang with Ninja or Unix Makefiles on Linux.
+
+// configure.sh
+```bash
+# Windows (MSVC + Ninja, Release)
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+# Linux (Ninja, Release)
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+# Linux (Unix Makefiles, Release)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+```
+
+  **3. Build the interpreter and standard shards.**
+
+// build.sh
+```bash
+cmake --build build --parallel
+```
+
+  **4. Verify the output layout.**
+
+  After a successful build, the output directory contains the interpreter next to a
+  `system/` folder with the standard shard DLLs. This is exactly the layout the
+  interpreter expects at startup.
+
+// build-layout.txt
+```text
+build/
+|-- bin/
+|   |-- shard            (shard.exe on Windows)
+|   \-- system/
+|       |-- stdio.dll
+|       |-- collections.dll
+|       |-- math.dll
+|       \-- ...
+```
+
+  **5. Run a quick smoke test.**
+
+// smoke-test.sh
+```bash
+# On Windows
+.\build\bin\shard --help
+
+# On Linux
+./build/bin/shard --help
+```
+
+## Verification
+
+  The build succeeded if:
+
+  - `build/bin/shard` (or `build/bin/shard.exe`) exists.
+  - `build/bin/system` contains the standard shard libraries.
+  - `shard --help` prints the command-line help.
+
+## Troubleshooting
+
+  - **Cannot find C++20 compiler.** Make sure MSVC, GCC, or Clang is installed and visible on your PATH. On Windows, run from a "Developer Command Prompt" or use  `vcvarsall.bat`.
+  - **Ninja is not found.** Install Ninja, or configure with the default generator for your platform by omitting `-G Ninja`.
+  - **Missing third-party dependencies.** Some optional shards (for example, raylib or SQLite) download or expect prebuilt static libraries. On MinGW these are skipped automatically; on MSVC verify that any required prebuilt artifacts are present.
+  - **Runtime cannot find standard shards.** Run the interpreter from the `build/bin` directory, or ensure the working directory contains a  `system/` folder with the shard DLLs.
+
+## See also
+
+  - `Installation` — installing prebuilt ShardScript binaries.
+  - `Hello World` — writing and running your first ShardScript program.
+  - `Runtime Architecture` — how the interpreter, compiler, and VM fit together.
+  - `Compiler Pipeline` — the stages that turn source into bytecode.
+  - `Virtual Machine Internals` — how the compiled bytecode is executed.
+  - `Event Loop and libuv` — how the runtime schedules asynchronous work.

@@ -1,0 +1,320 @@
+---
+title: Primitive Types
+---
+
+ShardScript provides a small set of built-in primitive types. Value types (`int`,
+  `double`, `bool`, `char`,
+  `byte`, and `nint`) are copied on assignment, while
+  `string` is a reference type and `void` marks the absence of a return value.
+
+## Summary
+
+  Primitive types are the atomic units of the ShardScript type system. Each has a fixed literal syntax, a defined
+  runtime size, and a default zero-initialized value. The compiler resolves every primitive at compile time and emits
+  bytecode that operates directly on the value or reference, with no dynamic boxing except where interop or conversion
+  explicitly requires it.
+
+## Syntax
+
+  Use the keyword as a type annotation, or use a literal directly in an expression.
+
+| Type | Literal syntax | Annotation example |
+| --- | --- | ---
+| `int` | 42, -7, 1`000`000, 0xA1, 0b1010, 2MB | `count: int = 42;` |
+| `double` | 3.14, -0.5, 1.0e3 | `pi: double = 3.14159;` |
+| `bool` | true or false | `flag: bool = true;` |
+| `char` | 'A', '\\n', '\\t' | `letter: char = 'A';` |
+| `byte` | 0 through 255 (contextually typed) | `channel: byte = 255;` |
+| `nint` | 0 or pointer value (contextually typed) | `handle: nint = 0;` |
+| `string` | "hello", "line\\nline", @"C:\\tools" | `name: string = "ShardScript";` |
+| `void` | No literal; used only as a return type. | `func Reset() -> void` |
+
+## Parameters / Arguments
+
+  Each primitive accepts a specific domain of values. Assigning or casting a value outside that domain produces a
+  compile-time or runtime error.
+
+| Type | Accepted values | Notes |
+| --- | --- | ---
+| `int` | 64-bit signed integer: -9 223 372 036 854 775 808 to 9 223 372 036 854 775 807 | Literals may use base prefixes and volume suffixes. |
+| `double` | 64-bit IEEE 754 floating-point value | Cannot use base prefixes or volume suffixes. |
+| `bool` | Only true or false | No implicit conversion from numeric values. |
+| `char` | Single Unicode code unit (platform wchar_t) | Must be exactly one character or escape. |
+| `byte` | Unsigned 8-bit integer: 0 to 255 | Requires contextual type or explicit cast. |
+| `nint` | Pointer-sized signed integer | Size matches sizeof(void*) on the target platform. |
+| `string` | Immutable sequence of UTF-16 code units | May be null; empty string is "". |
+| `void` | No value | Cannot be used for variables, parameters, or fields. |
+
+## Returns
+
+  Operations on primitives evaluate to a value of a specific type. Default values are zero-initialized memory.
+
+| Type | Default value | Common operation result types |
+| --- | --- | ---
+| `int` | `0` | int, promoted to double if mixed with double |
+| `double` | `0.0` | double |
+| `bool` | `false` | bool |
+| `char` | `'\0'` | char for increment/decrement; string for concatenation |
+| `byte` | `0` | byte |
+| `nint` | null pointer (0) | int for arithmetic involving int |
+| `string` | `null` | string |
+| `void` | — | — |
+
+## Exceptions / Errors
+
+| Error | Cause | Example |
+| --- | --- | ---
+| `Type mismatch in assignment` | Assigning an incompatible type without a cast. | `i: int = "42";` |
+| `Invalid characters in number` | Digits that do not match the declared base prefix. | `0xG1` |
+| `Number out of range` | Literal exceeds int64 range after applying a volume suffix. | `9EB` |
+| `Division by zero` | Divisor evaluates to zero at runtime. | `x / 0` |
+| `Modulo by zero` | Modulus evaluates to zero at runtime. | `x % 0` |
+| `Cannot cast from Type A to Type B` | Cast between incompatible scalar types or reference types. | `"hi" as int` |
+| `Empty Char literal` | A char literal contains no character. | `ch: char = '';` |
+| `Invalid Char literal length` | More than one character between single quotes. | `ch: char = 'AB';` |
+
+## Remarks
+
+  **Value types and reference types.** `int`, `double`,
+  `bool`, `char`, `byte`, and
+  `nint` are value types implemented as `StructSymbol` nodes. They are stored
+  inline in objects, arrays, and locals, and assignment copies the bits. `string` is implemented as
+  a `ClassSymbol` and is heap-allocated; assignment copies the reference. `void`
+  is also a struct with zero size and is only legal as a return type.
+
+  **Memory layout.** The runtime stores each primitive in a contiguous memory block managed by the garbage
+  collector. Sizes follow the C++ backing type:
+
+| Type | Backing storage | Size (typical 64-bit host) |
+| --- | --- | ---
+| `bool` | `bool` | 1 byte |
+| `byte` | `std::uint8_t` | 1 byte |
+| `char` | `wchar_t` | 2 bytes on Windows, 4 bytes on most Unix hosts |
+| `int` | `std::int64_t` | 8 bytes |
+| `double` | `double` | 8 bytes |
+| `nint` | `void*` | 8 bytes on 64-bit hosts, 4 bytes on 32-bit hosts |
+| `string` | std::int64_t length + wchar_t* data | 16 bytes |
+| `void` | — | 0 bytes |
+
+  **Numeric literal parsing.** Integer literals are `int` by default. They may include a
+  base prefix (`0x` hexadecimal, `0b` binary, `0d` decimal)
+  and digit separators (```). They may also end with a binary volume suffix:
+  `KB`, `MB`, `GB`, `TB`, or
+  `PB`. Floating-point literals are always `double` and may not use base prefixes
+  or volume suffixes.
+
+  **Contextual literal typing.** When an integer literal appears in a position whose expected type is
+  `byte` or `nint`, the compiler binds the literal to that type instead of
+  `int`. This lets you write `b: byte = 255;` or
+  `h: nint = 0;` without an explicit cast. Array element contexts do not currently propagate this
+  expectation, so byte arrays usually require casts such as `[1 as byte, 2 as byte]`.
+
+  **Conversion rules.** ShardScript does not perform implicit numeric conversions on assignment or argument
+  passing. You must use the explicit cast operator `as` to convert between scalar primitives. The
+  built-in cast `value as TargetType` is supported between any pair of
+  `bool`, `int`, `double`, `char`,
+  `byte`, and `nint`. Reference types may be cast up or down their inheritance
+  chain and to or from interfaces.
+
+  **Operator promotion.** Although assignment requires exact type matching, arithmetic operators promote mixed
+  numeric operands. If either operand is `double`, the result is `double`.
+  Otherwise, if both operands are `int` or `nint`, the result is
+  `int`. `byte` arithmetic is defined only between two
+  `byte` values and yields `byte`. Adding a `char` to an
+  integer or string produces a `string`.
+
+  **Boolean and bitwise operators.** The operators `&`,
+  `|`, and `!` operate on booleans. The same symbols also perform bitwise
+  operations on integral types. There is no short-circuiting `&&` or
+  `||`; keyword aliases `and`, `or`, and
+  `not` map to the same operators and always evaluate both sides.
+
+  **Printability.** Every primitive implements `IPrintable` and therefore has a
+  `ToString()` method. `println` accepts any printable value without requiring
+  an open-ended `any` parameter. Boolean `true` prints as `true`
+  and `false` as `false`. `byte` prints as its decimal
+  numeric value, not as a character.
+
+<Warning>
+String interpolation with `$"..."` is planned but not yet implemented. Today, concatenate with
+  `+` or use `strings.Format` from the standard library.
+</Warning>
+
+## Examples
+
+  The following program declares every primitive with an explicit type and prints each one.
+
+// primitives_intro.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Each primitive declared with an explicit annotation.
+    count: int       = 42;
+    pi: double       = 3.14159;
+    flag: bool       = true;
+    letter: char     = 'A';
+    channel: byte    = 255;
+    handle: nint     = 0;
+    name: string     = "ShardScript";
+
+    println(count);
+    println(pi);
+    println(flag);
+    println(letter);
+    println(channel);
+    println(name);
+}
+```
+
+  Integer literals support several convenient formats.
+
+// numeric_literals.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Decimal, separated, hex, binary, and volume suffixes.
+    plain: int      = 42;
+    separated: int  = 1\`000\`000;
+    hex: int        = 0xA1;
+    binary: int     = 0b1010;
+    megabytes: int  = 2MB;
+
+    println(plain);        // 42
+    println(separated);    // 1000000
+    println(hex);          // 161
+    println(binary);       // 10
+    println(megabytes);    // 2097152
+}
+```
+
+  Contextual typing lets small literals bind to `byte` and `nint` without a
+  cast, but mixed arithmetic requires care.
+
+// byte_and_nint.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Contextual typing: the literal is bound as byte/nint because the target type says so.
+    a: byte = 10;
+    b: byte = 5;
+    handle: nint = 0;
+
+    // byte arithmetic is defined only between two byte operands.
+    sum: byte = a + b;
+    println(sum);          // 15
+
+    // nint mixed with int evaluates to int.
+    n: nint = 42;
+    mixed: int = n + 1;
+    println(mixed);        // 43
+
+    // To mix byte with int, cast explicitly.
+    wider: int = a as int + 100;
+    println(wider);        // 110
+}
+```
+
+  Character and string literals, including escape sequences and verbatim strings.
+
+// strings_and_chars.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Regular string with escape sequences.
+    line: string = "line one\\nline two";
+    quoted: string = "she said \\"hi\\"";
+
+    // Verbatim string: backslashes are literal.
+    path: string = @"C:\\Users\\name\\file.txt";
+
+    // Character literals use single quotes.
+    newline: char = '\\n';
+    tab: char = '\\t';
+    backslash: char = '\\\\';
+
+    println(line);
+    println(quoted);
+    println(path);
+    println(newline == '\\n');
+    println(tab == '\\t');
+    println(backslash == '\\\\');
+}
+```
+
+  Explicit casts convert between scalar primitives. Casts truncate or reinterpret as needed.
+
+// casts.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Casting between numeric types.
+    whole: int = 9;
+    fraction: double = whole as double;
+    println(fraction);     // 9.0
+
+    truncated: int = 9.7 as int;
+    println(truncated);    // 9
+
+    // bool cast from int follows the rule: zero is false, everything else is true.
+    truthy: bool = 42 as bool;
+    falsy: bool = 0 as bool;
+    println(truthy);       // true
+    println(falsy);        // false
+
+    // char and int are interchangeable through casts.
+    code: int = 'A' as int;
+    letter: char = 65 as char;
+    println(code);         // 65
+    println(letter);       // A
+}
+```
+
+  Common mistakes to avoid: implicit numeric widening, assigning a string to a number, and treating
+  `byte` as interchangeable with `int`.
+
+// common_mistakes.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Valid: explicit cast is required.
+    d: double = 5 as double;
+    println(d);            // 5.0
+
+    // Valid: byte + byte stays byte.
+    a: byte = 10;
+    b: byte = 20;
+    println(a + b);        // 30
+
+    // Invalid and commented out:
+    // i: int = a;               // ERROR: cannot assign byte to int implicitly
+    // x: int = "42";            // ERROR: string is not assignable to int
+    // y: double = 5;            // ERROR: int is not assignable to double
+    // z: bool = 1;              // ERROR: int is not assignable to bool
+
+    println("done");
+}
+```

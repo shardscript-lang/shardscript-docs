@@ -1,0 +1,403 @@
+---
+title: Working with Objects
+---
+
+This how-to explains how to allocate, inspect, and mutate ShardScript objects from inside native C++
+  callbacks. You will register a concrete class with instance fields, read and write those fields through
+  `ObjectInstance::GetField` and `SetField`, allocate
+  constructed generic instances with `AllocateGeneric`, use
+  `getInfo` and `getShape` to recover runtime type
+  information, and use the convenience helpers in
+  `<shard/runtime/NativeHelpers.hpp>` for construction, method calls, field
+  access, and property access.
+
+## Prerequisites
+
+  - A C++20 toolchain and a project that links the ShardScript runtime shared library.
+  - The ShardScript headers on your include path, especially  `ShardScript.hpp`, `shard/runtime/ObjectInstance.hpp`,  `shard/runtime/NativeHelpers.hpp`, and  `shard/semantic/SymbolFactory.hpp`.
+  - Familiarity with the two exported symbols, `SHARDLIB_GETMETADATA` and  `SHARDLIB_ENTRYPOINT`, and the `SymbolBuilder` fluent registration API.
+  - Basic understanding of ShardScript generic syntax from the caller side.
+
+## Goal
+
+  Build a small native library called `shard.objectsdemo` that exposes:
+
+  - A `Counter` class with an integer field and an instance method that increments it.
+  - A `Cell<T>` generic class with a single field and methods to set and get the value.
+  - A helper that prints the concrete type arguments of a generic instance by inspecting its shape.
+
+## Step-by-Step Instructions
+
+  **1. Create the library source file.**
+
+  A native library is any shared library that exports `ShardLib_GetMetadata` and
+  `ShardLib_EntryPoint`. It can be built from one source file or many, inside the
+  framework tree or in a separate project. Create a single C++ source file for this demo.
+
+// objects_demo.shard.cpp
+```cpp
+#include <ShardScript.hpp>
+#include <shard/runtime/ObjectInstance.hpp>
+#include <shard/runtime/MethodCallState.hpp>
+#include <shard/runtime/NativeHelpers.hpp>
+#include <shard/semantic/SymbolBuilder.hpp>
+#include <shard/semantic/SymbolFactory.hpp>
+
+using namespace shard;
+```
+
+  **2. Capture the symbols you will need at runtime.**
+
+  Field access uses the `SlotIndex` that `AddField`
+  assigns at registration time. Generic allocation needs the raw class definition and its type parameter.
+  Store these as static pointers so the callbacks can reach them later.
+
+// objects_demo.shard.cpp
+```cpp
+// Concrete type symbols.
+static ClassSymbol* counterClass = nullptr;
+static MethodSymbol* counterIncrementMethod = nullptr;
+static FieldSymbol* counter_valueField = nullptr;
+
+// Generic Cell<T> symbols.
+static ClassSymbol* cellClass_raw = nullptr;
+static TypeParameterSymbol* cell_T = nullptr;
+static FieldSymbol* cell_valueField = nullptr;
+```
+
+  **3. Register the `Counter` class and its methods.**
+
+  Use `LINK_INSTANCE` for the class so ShardScript can create instances of it.
+  The constructor callback receives the newly allocated instance as `context.Args[0]`
+  and must return that same instance.
+
+// objects_demo.shard.cpp
+```cpp
+static ObjectInstance* Counter_Init(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    self->SetField(counter_valueField->SlotIndex, context.Collector.FromValue(0));
+    return self;
+}
+
+static ObjectInstance* Counter_Increment(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+
+    std::int64_t current = self->GetField(counter_valueField->SlotIndex)->AsInteger();
+    std::int64_t next = current + 1;
+
+    self->SetField(counter_valueField->SlotIndex, context.Collector.FromValue(next));
+    return nullptr;
+}
+
+static ObjectInstance* Counter_GetValue(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    ObjectInstance* value = self->GetField(counter_valueField->SlotIndex);
+    return value;
+}
+```
+
+// objects_demo.shard.cpp
+```cpp
+static void RegisterCounter(SymbolBuilder<NamespaceSymbol>& ns)
+{
+    ns.AddClass(L"Counter", ACS_PUBLIC, LINK_INSTANCE, [](SymbolBuilder<ClassSymbol> cls)
+    {
+        counterClass = cls.Get();
+        counter_valueField = cls.AddField(L"_value", TYPE_INT, LINK_INSTANCE, ACS_PRIVATE).Get();
+
+        cls.AddInit()
+            .SetCallback(&Counter_Init);
+
+        counterIncrementMethod = cls.AddMethod(L"Increment", TYPE_VOID, LINK_INSTANCE)
+            .SetCallback(&Counter_Increment)
+            .Get();
+
+        cls.AddMethod(L"GetValue", TYPE_INT, LINK_INSTANCE)
+            .SetCallback(&Counter_GetValue);
+    });
+}
+```
+
+<Info title="Why capture FieldSymbol*">
+The runtime assigns each field a stable slot number, but the exact number depends on registration order
+  and base types. Always store the returned `FieldSymbol*` and use
+  `SlotIndex` rather than hard-coding an integer offset.
+</Info>
+
+  **4. Register the generic `Cell<T>` class.**
+
+  A generic class needs a type parameter before its fields or method parameters can reference it. Use
+  `AddTypeParameter` to introduce `T`, then use
+  `SymbolFactory` to build array or generic field types when necessary.
+
+// objects_demo.shard.cpp
+```cpp
+static ObjectInstance* Cell_Init(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+
+    // The concrete substitution for T is the first type argument on the current frame.
+    TypeSymbol* concreteT = context.Frame->TypeArguments[0];
+
+    // For a reference type T, default-initialize the field to null.
+    self->SetField(cell_valueField->SlotIndex, GarbageCollector::NullInstance);
+    return self;
+}
+
+static ObjectInstance* Cell_SetValue(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    ObjectInstance* value = context.Args[1];
+    self->SetField(cell_valueField->SlotIndex, value);
+    return nullptr;
+}
+
+static ObjectInstance* Cell_GetValue(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    return self->GetField(cell_valueField->SlotIndex);
+}
+```
+
+// objects_demo.shard.cpp
+```cpp
+static void RegisterCell(SymbolBuilder<NamespaceSymbol>& ns)
+{
+    ns.AddClass(L"Cell", ACS_PUBLIC, LINK_INSTANCE, [](SymbolBuilder<ClassSymbol> cls)
+    {
+        cellClass_raw = cls.Get();
+        cell_T = cls.AddTypeParameter(L"T").Get();
+        cell_valueField = cls.AddField(L"_value", cell_T, LINK_INSTANCE, ACS_PRIVATE).Get();
+
+        cls.AddInit()
+            .SetCallback(&Cell_Init);
+
+        cls.AddMethod(L"SetValue", TYPE_VOID, LINK_INSTANCE)
+            .AddParameter(L"value", cell_T)
+            .SetCallback(&Cell_SetValue);
+
+        cls.AddMethod(L"GetValue", cell_T, LINK_INSTANCE)
+            .SetCallback(&Cell_GetValue);
+    });
+}
+```
+
+  **5. Allocate a constructed generic instance from another callback.**
+
+  `GarbageCollector::AllocateGeneric` creates an instance of the raw generic
+  definition with concrete type arguments substituted. Use it when you need to manufacture a generic object
+  inside native code rather than returning it from a constructor.
+
+// objects_demo.shard.cpp
+```cpp
+static ObjectInstance* MakeIntCell(const CallState& context)
+{
+    // Allocate Cell<int> directly.
+    ObjectInstance* cell = context.Collector.AllocateGeneric(cellClass_raw, { TYPE_INT });
+
+    // Initialize the backing field so the object is in a valid state.
+    cell->SetField(cell_valueField->SlotIndex, context.Collector.FromValue(42));
+    return cell;
+}
+```
+
+<Warning title="AllocateGeneric vs AllocateInstance">
+Always use `AllocateGeneric` for generic classes.
+  `AllocateInstance` creates an instance of the raw definition without substituting
+  type arguments, which leaves the object with an incorrect shape and breaks field layout for value-type
+  type arguments.
+</Warning>
+
+  **6. Inspect runtime type information with `getInfo` and&#123;' '&#125;
+  `getShape`.**
+
+  `getInfo` returns the generic class definition symbol. The concrete type arguments
+  live on `getShape()->GenericArguments`. Use this when a callback receives a generic
+  object and must reason about the actual substitution.
+
+// objects_demo.shard.cpp
+```cpp
+static ObjectInstance* InspectCell(const CallState& context)
+{
+    ObjectInstance* cell = context.Args[0];
+
+    ClassSymbol* definition = cell->getInfo();
+    TypeSymbol* concreteT = nullptr;
+
+    if (cell->getShape() != nullptr && !cell->getShape()->GenericArguments.empty())
+    {
+        concreteT = cell->getShape()->GenericArguments[0];
+    }
+
+    std::wstring message = L"definition=" + definition->Name;
+    if (concreteT != nullptr)
+    {
+        message += L", T=" + concreteT->Name;
+    }
+
+    return context.Collector.FromValue(message);
+}
+```
+
+  **7. Wire everything together in the entry point.**
+
+// objects_demo.shard.cpp
+```cpp
+SHARDLIB_GETMETADATA
+{
+    lib.Name        = L"shard.objectsdemo";
+    lib.Description = L"ObjectInstance, fields, and generic allocation demo";
+    lib.Version     = L"1.0.0";
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> ns(context, L"objectsdemo");
+
+    RegisterCounter(ns);
+    RegisterCell(ns);
+
+    SymbolFactory factory(context.GetSemanticModel().Table.get());
+
+    ns.AddMethod(L"MakeIntCell", TYPE_ANY, LINK_STATIC, ACS_PUBLIC)
+        .SetCallback(&MakeIntCell);
+
+    ns.AddMethod(L"InspectCell", TYPE_STRING, LINK_STATIC, ACS_PUBLIC)
+        .AddParameter(L"cell", factory.GenericType(cellClass_raw, { { L"T", cell_T } }))
+        .SetCallback(&InspectCell);
+}
+```
+
+<Info title="Registering generic method parameters">
+Use `SymbolFactory::GenericType` to describe an open generic parameter type such
+  as `Cell<T>` at registration time. Pass the raw class and a list of its type
+  parameters in the same order as `AddTypeParameter`.
+</Info>
+
+  **8. Build the shared library.**
+
+  Link against the ShardScript runtime shared library and include `ShardScript/include`.
+  The exact command depends on your build system; a minimal CMake target looks like this.
+
+// CMakeLists.txt
+```cmake
+add_library(objects_demo SHARED objects_demo.shard.cpp)
+
+target_include_directories(objects_demo PRIVATE "\${SHARDSCRIPT_ROOT}/ShardScript/include")
+target_link_libraries(objects_demo PRIVATE ShardScript)
+```
+
+## Convenience helpers from NativeHelpers.hpp
+
+  The helpers in `<shard/runtime/NativeHelpers.hpp>` wrap the low-level object
+  API so callbacks can construct instances, invoke methods, and read or write fields and properties without
+  manually managing argument arrays or reference counts. They are ordinary inline functions, so including the
+  header is enough; no extra library link is required.
+
+| Helper | Purpose |
+| --- | ---
+| `NewObject` | Allocates an instance and invokes a constructor, returning an owning reference. |
+| `CallMethod` | Invokes a static or instance method with an initializer list of arguments. |
+| `GetField` | Reads a field value through its FieldSymbol. |
+| `SetField` | Writes a field value through its FieldSymbol. |
+| `GetProperty` | Invokes a property getter. |
+| `SetProperty` | Invokes a property setter. |
+
+  For example, the following callback manufactures a `Counter`, increments it twice
+  through its instance method, and returns the final value object. The helper handles the argument vector,
+  the `this` pointer, and reference counting during the constructor call.
+
+// objects_demo.shard.cpp
+```cpp
+#include <shard/runtime/NativeHelpers.hpp>
+
+static ObjectInstance* ManufactureAndIncrement(const CallState& context)
+{
+    // Allocate and construct Counter with the parameterless constructor.
+    ObjectInstance* counter = NewObject(context, counterClass);
+
+    // Invoke Counter.Increment() twice via the registered method symbol.
+    CallMethod(context, counterIncrementMethod, counter);
+    CallMethod(context, counterIncrementMethod, counter);
+
+    // Return the value field directly; the caller receives a borrowed reference.
+    return GetField(counter, counter_valueField);
+}
+```
+
+<Info title="Reference counting with NewObject">
+`NewObject` returns an object whose reference count is already 1. If you do not
+  store it in a field, return it, or hand it to the garbage collector before the callback exits, decrement
+  the reference with `DecrementReference()` to avoid leaking the instance.
+</Info>
+
+## Verification
+
+  Run the following ShardScript program against the compiled shared library. It creates a
+  `Counter`, increments it, constructs a `Cell<int>`,
+  and calls the native helpers.
+
+// demo.shard
+```csharp
+using stdio;
+using objectsdemo;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    Counter counter = new Counter();
+    counter.Increment();
+    counter.Increment();
+    println("Counter: " + counter.GetValue());
+
+    Cell<int> cell = new Cell<int>();
+    cell.SetValue(99);
+    println("Cell value: " + cell.GetValue());
+
+    Cell<int> manufactured = MakeIntCell();
+    println("Manufactured: " + manufactured.GetValue());
+
+    println("Inspection: " + InspectCell(manufactured));
+}
+```
+
+  Load the library with the `-l` flag and run the program:
+
+```bash
+# Windows
+shard demo.shard -l objects_demo.dll
+
+# Linux
+shard demo.shard -l libobjects_demo.so
+
+# macOS
+shard demo.shard -l libobjects_demo.dylib
+```
+
+  Expected output:
+
+```text
+Counter: 2
+Cell value: 99
+Manufactured: 42
+Inspection: definition=Cell, T=int
+```
+
+## Troubleshooting
+
+  - **Field reads return stale or garbage values.** Verify that you stored the  `FieldSymbol*` returned by `AddField` and that you use  `field->SlotIndex` for both `GetField` and  `SetField`.
+  - **Generic instance behaves as if its type arguments are missing.** Make sure you allocated it with `AllocateGeneric(rawClass, { concreteT })`, not  `AllocateInstance(rawClass)`.
+  - **`getInfo()` returns the raw definition instead of the constructed type.** This is expected. For concrete type arguments read  `instance->getShape()->GenericArguments` instead.
+  - **Null reference when reading a field.** Initialize fields in the constructor or immediately after `AllocateGeneric`. Reference-typed fields default to null if left untouched.
+  - **Callback receives the wrong generic type argument.** Read  `context.Frame->TypeArguments` in the same order as the  `AddTypeParameter` calls. The first added parameter is at index 0.
+
+## See also
+
+  - `library-building/working-with-fields` — working with fields.
+  - `library-building/reading-arguments` — reading arguments.
+  - `library-building/returning-values` — returning values.
+  - `library-building/garbage-collection-rules` — GC and lifetime rules.

@@ -1,0 +1,415 @@
+---
+title: 'Example: Wrapping a C++ Class with nint & IDisposable'
+---
+
+This tutorial builds a complete native library that wraps a small C++ class inside a
+  ShardScript type. You will allocate the C++ object from native code, store its pointer in a
+  private `nint` field, expose methods and a property, implement
+  `IDisposable`, and use `ObjectRef` to keep the
+  wrapper alive across an async boundary.
+
+## Prerequisites
+
+  - A C++20 toolchain and CMake 3.20 or later.
+  - A built ShardScript runtime shared library and the headers in  `ShardScript/include`.
+  - The `shard` interpreter available on your PATH or next to your build output.
+  - Familiarity with the callback contract described in  `library-building/native-library-overview`.
+
+## Scenario
+
+  You have a C++ class named `CounterEngine` that holds an integer value and
+  can increment or reset it. You want to expose it to ShardScript as `nativecounter.Counter`
+  so managed code can create instances, read the current value, increment synchronously or after a
+  delay, and deterministically release the native heap allocation through
+  `IDisposable`.
+
+## Step-by-Step Instructions
+
+  **1. Create the project directory.**
+
+  Make a new directory outside the ShardScript repository. This tutorial uses
+  `my-native-wrapper/` next to the ShardScript checkout.
+
+```bash
+mkdir my-native-wrapper
+ cd my-native-wrapper
+```
+
+| Path | Purpose |
+| --- | ---
+| my-native-wrapper/CMakeLists.txt | Build script for the shared library. |
+| my-native-wrapper/counter.h | Header for the C++ class being wrapped. |
+| my-native-wrapper/counter.cpp | Implementation of the C++ class. |
+| my-native-wrapper/library.cpp | ShardScript metadata, symbol registration, and callbacks. |
+| my-native-wrapper/app.shard | ShardScript program that exercises the wrapper. |
+
+  **2. Write the C++ class to wrap.**
+
+  Create `counter.h` and `counter.cpp`. The class is
+  plain C++ with no ShardScript dependencies; the wrapper will own its lifetime.
+
+// counter.h
+```cpp
+#pragma once
+
+#include <cstdint>
+
+class CounterEngine
+{
+public:
+    explicit CounterEngine(std::int64_t initialValue);
+
+    void Increment();
+    void Reset();
+    std::int64_t GetValue() const;
+
+private:
+    std::int64_t _value;
+};
+```
+
+// counter.cpp
+```cpp
+#include "counter.h"
+
+CounterEngine::CounterEngine(std::int64_t initialValue)
+    : _value(initialValue)
+
+
+void CounterEngine::Increment()
+{
+    _value = _value + 1;
+}
+
+void CounterEngine::Reset()
+{
+    _value = 0;
+}
+
+std::int64_t CounterEngine::GetValue() const
+{
+    return _value;
+}
+```
+
+  **3. Register the library and the wrapper type.**
+
+  Create `library.cpp`. Include the ShardScript authoring headers, the async
+  helper, and your class header. Use `SHARDLIB_GETMETADATA` to identify the
+  library and `SHARDLIB_ENTRYPOINT` to register the namespace, class, field,
+  methods, property, and the async method.
+
+// library.cpp
+```cpp
+#include <ShardScript.hpp>
+#include <shard/runtime/MethodCallState.hpp>
+#include <shard/runtime/NativeAsync.hpp>
+#include <shard/runtime/ObjectInstance.hpp>
+#include <shard/semantic/SymbolBuilder.hpp>
+#include <shard/semantic/SymbolFactory.hpp>
+
+#include "counter.h"
+
+#include <cstdint>
+#include <memory>
+
+using namespace shard;
+
+static FieldSymbol* s_handleField = nullptr;
+
+static CounterEngine* GetCounterEngine(ObjectInstance* self)
+{
+    ObjectInstance* handleObj = self->GetField(s_handleField->SlotIndex);
+
+    if (handleObj == nullptr || handleObj == GarbageCollector::NullInstance)
+    {
+        return nullptr;
+    }
+
+    return reinterpret_cast<CounterEngine*>(handleObj->AsNint());
+}
+
+static ObjectInstance* Counter_IncrementAfterDelay(const CallState& context) noexcept
+{
+    ObjectInstance* self = context.Args[0];
+    std::int64_t milliseconds = context.Args[1]->AsInteger();
+
+    CounterEngine* engine = GetCounterEngine(self);
+    if (engine == nullptr)
+    {
+        return shard::FaultedTask(context, L"Counter has already been disposed.");
+    }
+
+    struct AsyncState
+    {
+        ObjectRef InstanceRef;
+        CounterEngine* Engine = nullptr;
+        std::int64_t Milliseconds = 0;
+    };
+
+    std::shared_ptr<AsyncState> state = std::make_shared<AsyncState>();
+    state->InstanceRef = ObjectRef(self);
+    state->Engine = engine;
+    state->Milliseconds = milliseconds;
+
+    return shard::DoValueTask<std::int64_t>(context, [state](shard::AsyncValueScope<std::int64_t> async) mutable
+    {
+        async.Delay(static_cast<std::uint32_t>(state->Milliseconds), [async, state]() mutable
+        {
+            state->Engine->Increment();
+            async.Complete(state->Engine->GetValue());
+        });
+    });
+}
+
+SHARDLIB_GETMETADATA
+{
+    lib.Name        = L"shard.nativecounter";
+    lib.Description = L"Tutorial wrapper around a C++ CounterEngine class";
+    lib.Version     = L"1.0.0";
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolFactory factory(context.GetSemanticModel().Table.get());
+    GenericTypeSymbol* valueTaskOfInt = factory.GenericType(CLASS_VALUETASK, { { L"T", TYPE_INT } });
+
+    SymbolBuilder<NamespaceSymbol> ns(context, L"nativecounter");
+
+    ns.AddClass(L"Counter", ACS_PUBLIC, LINK_INSTANCE, [valueTaskOfInt](SymbolBuilder<ClassSymbol> cls)
+    {
+        cls.Implements(TRAIT_DISPOSABLE);
+
+        s_handleField = cls.AddField(L"_handle", TYPE_NINT, LINK_INSTANCE, ACS_PRIVATE);
+
+        cls.AddInit()
+            .AddParameter(L"initialValue", TYPE_INT)
+            .SetCallback([](const CallState& context)
+            {
+                ObjectInstance* self = context.Args[0];
+                std::int64_t initialValue = context.Args[1]->AsInteger();
+
+                CounterEngine* engine = new CounterEngine(initialValue);
+                self->SetField(s_handleField->SlotIndex, context.Collector.FromNint(engine, false));
+
+                return self;
+            });
+
+        cls.AddMethod(L"Increment", TYPE_VOID, LINK_INSTANCE)
+            .SetCallback([](const CallState& context)
+            {
+                ObjectInstance* self = context.Args[0];
+                CounterEngine* engine = GetCounterEngine(self);
+
+                if (engine != nullptr)
+                {
+                    engine->Increment();
+                }
+
+                return nullptr;
+            });
+
+        cls.AddMethod(L"Reset", TYPE_VOID, LINK_INSTANCE)
+            .SetCallback([](const CallState& context)
+            {
+                ObjectInstance* self = context.Args[0];
+                CounterEngine* engine = GetCounterEngine(self);
+
+                if (engine != nullptr)
+                {
+                    engine->Reset();
+                }
+
+                return nullptr;
+            });
+
+        cls.AddProperty(L"Value", TYPE_INT, LINK_INSTANCE, ACS_PUBLIC)
+            .AddGetter()
+            .SetCallback([](const CallState& context)
+            {
+                ObjectInstance* self = context.Args[0];
+                CounterEngine* engine = GetCounterEngine(self);
+
+                if (engine == nullptr)
+                {
+                    return context.Collector.FromValue(0);
+                }
+
+                return context.Collector.FromValue(engine->GetValue());
+            });
+
+        cls.AddMethod(L"Dispose", TYPE_VOID, LINK_INSTANCE)
+            .SetCallback([](const CallState& context)
+            {
+                ObjectInstance* self = context.Args[0];
+                ObjectInstance* handleObj = self->GetField(s_handleField->SlotIndex);
+
+                if (handleObj == nullptr || handleObj == GarbageCollector::NullInstance)
+                {
+                    return nullptr;
+                }
+
+                CounterEngine* engine = reinterpret_cast<CounterEngine*>(handleObj->AsNint());
+                if (engine != nullptr)
+                {
+                    delete engine;
+                    self->SetField(s_handleField->SlotIndex, context.Collector.FromNint(nullptr, true));
+                }
+
+                return nullptr;
+            })
+            .IsImplementationOf(TRAIT_DISPOSABLE_Dispose);
+
+        cls.AddMethod(L"IncrementAfterDelay", valueTaskOfInt, LINK_INSTANCE)
+            .AddParameter(L"milliseconds", TYPE_INT)
+            .SetCallback(&Counter_IncrementAfterDelay);
+    });
+}
+```
+
+<Info title="Why ObjectRef is needed">
+The asynchronous callback runs later on the event-loop thread, after the synchronous method has
+  returned. Without `ObjectRef`, the managed `Counter`
+  instance could be collected before the delay fires. `ObjectRef` pins the
+  object until the shared state is destroyed.
+</Info>
+
+<Warning title="Production lifetime note">
+This example reads the native handle once before starting the async work and keeps that raw
+  pointer in the shared state. In production code you should also synchronize disposal with pending
+  async operations, for example by reference-counting the native object or by checking a disposal
+  flag under a lock inside the delayed callback.
+</Warning>
+
+  **4. Add the CMake build script.**
+
+  The target is a normal shared library. Point it at the ShardScript include directory and link the
+  ShardScript runtime library. Adjust `SHARDSCRIPT_ROOT` to match your
+  checkout or install prefix.
+
+// CMakeLists.txt
+```cmake
+cmake_minimum_required(VERSION 3.20)
+project(NativeCounter CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+set(SHARDSCRIPT_ROOT "\${CMAKE_CURRENT_SOURCE_DIR}/../ShardScript"
+    CACHE PATH "Root of the ShardScript repository or install prefix")
+
+find_library(SHARDSCRIPT_LIB
+    NAMES ShardScript libShardScript
+    PATHS
+        "\${SHARDSCRIPT_ROOT}/build/bin"
+        "\${SHARDSCRIPT_ROOT}/build/bin/Release"
+        "\${SHARDSCRIPT_ROOT}/lib"
+    NO_DEFAULT_PATH
+    REQUIRED
+)
+
+add_library(native_counter SHARED
+    counter.cpp
+    library.cpp
+)
+
+set_target_properties(native_counter PROPERTIES
+    WINDOWS_EXPORT_ALL_SYMBOLS ON
+)
+
+target_include_directories(native_counter PRIVATE "\${SHARDSCRIPT_ROOT}/ShardScript/include")
+target_link_libraries(native_counter PRIVATE \${SHARDSCRIPT_LIB})
+```
+
+  **5. Build the shared library.**
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+```
+
+  The build emits a platform-specific shared library in `build/`:
+
+  - Windows: `build/native_counter.dll`
+  - Linux: `build/libnative_counter.so`
+  - macOS: `build/libnative_counter.dylib`
+
+  **6. Write a ShardScript program that uses the wrapper.**
+
+  Create `app.shard`. Use a resource `defer` to ensure
+  `Dispose()` runs when the variable goes out of scope, even if an exception
+  is thrown.
+
+// app.shard
+```csharp
+using stdio;
+using async;
+using nativecounter;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    defer counter: Counter = new Counter(5);
+
+    println("initial: " + counter.Value);
+
+    counter.Increment();
+    counter.Increment();
+    println("after increments: " + counter.Value);
+
+    counter.Reset();
+    println("after reset: " + counter.Value);
+
+    delayed: ValueTask<int> = counter.IncrementAfterDelay(50);
+    ValueTask.Wait(delayed);
+    println("after delayed increment: " + delayed.Result);
+
+    println("final value: " + counter.Value);
+}
+```
+
+  **7. Run the program.**
+
+  Load the library with the `-l` flag and pass the path to the shared library
+  you just built.
+
+```bash
+# Windows
+shard app.shard -l build/native_counter.dll
+
+# Linux
+shard app.shard -l build/libnative_counter.so
+
+# macOS
+shard app.shard -l build/libnative_counter.dylib
+```
+
+## Expected Output
+
+  The program creates the counter, exercises synchronous methods, awaits one delayed increment, and
+  prints the values in order. The resource defer guarantees `Dispose()` runs
+  at scope exit, releasing the native `CounterEngine` allocation.
+
+```text
+initial: 5
+after increments: 7
+after reset: 0
+after delayed increment: 1
+final value: 1
+```
+
+<Tip title="Success criteria">
+If you see the sequence above, the library compiled, the runtime resolved the two exported
+  symbols, the `_handle` field stored the native pointer, and the async
+  callback kept the wrapper alive long enough to complete.
+</Tip>
+
+## What's next?
+
+  - Add a setter to the `Value` property by calling  `AddSetter()` on the property symbol.
+  - Replace the raw pointer with a reference-counted native object so disposal is safe while async callbacks are pending.
+  - Add cancellation support by accepting a `CancellationToken` in  `IncrementAfterDelay` and checking it inside the delayed callback.
+  - Study `system/socket.shard.cpp` and  `system/filesystem.shard.cpp` for larger examples of  `ObjectRef`, async I/O, and cross-library symbol lookups.
+  - Review `library-building/native-handles-and-object-lifetime` for the full lifetime model behind wrappers.
+  - See `library-building/async-await-native` for more async patterns.

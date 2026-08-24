@@ -1,0 +1,286 @@
+---
+title: HttpClient
+---
+
+## Summary
+
+  The `shard.http` library exposes the `HttpClient`
+  class in the `net` namespace for making synchronous HTTP requests against a
+  single base URL. It currently supports `GET` and `POST`
+  operations and returns a structured `HttpResponse` containing the status code
+  and response body.
+
+## Syntax
+
+  Import the namespace and create a client bound to a base URL. The client implements
+  `IDisposable`, so it must be disposed when it is no longer needed:
+
+// httpclient_basic.shard
+```csharp
+using net;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // The client is bound to the base URL for the lifetime of the object.
+    client := new HttpClient("http://localhost:8080");
+
+    // Perform a GET request against a path relative to the base URL.
+    response: HttpResponse = client.Get("/api/status");
+    println(response.StatusCode);
+    println(response.Body);
+
+    // Release the native httplib client and its connection state.
+    client.Dispose();
+}
+```
+
+| Member | Signature | Access |
+| --- | --- | ---
+| `HttpClient` | `new HttpClient(baseUrl: string)` | Public constructor; binds the client to the supplied base URL. |
+| `Get(path)` | `func Get(path: string) -> HttpResponse` | Instance method; performs an HTTP GET request. |
+| `Post(path, jsonPayload)` | `func Post(path: string, jsonPayload: string) -> HttpResponse` | Instance method; performs an HTTP POST request with JSON content. |
+| `Dispose()` | `func Dispose() -> void` | Instance method; releases the native client and connection resources. |
+| `HttpResponse.StatusCode` | `property StatusCode: int` | Read-only instance property; HTTP status code returned by the server. |
+| `HttpResponse.Body` | `property Body: string` | Read-only instance property; response payload as a string. |
+
+## Parameters / Arguments
+
+| Parameter | Type | Description |
+| --- | --- | ---
+| `baseUrl` | string | The scheme, host, and optional port to which all requests are relative. Example values include "http://localhost:8080" and "https://api.example.com". |
+| `path` | string | The request path, relative to baseUrl. May include a query string such as "/search?q=shard". |
+| `jsonPayload` | string | The request body sent with a POST request. The implementation always sets the Content-Type header to "application/json". |
+
+## Returns
+
+| Member | Return Type | Description |
+| --- | --- | ---
+| `new HttpClient(baseUrl)` | HttpClient | A client instance bound to the supplied base URL. |
+| `Get(path)` | HttpResponse | The server response, including status code and body. |
+| `Post(path, jsonPayload)` | HttpResponse | The server response, including status code and body. |
+| `Dispose()` | void | No value is returned. |
+| `HttpResponse.StatusCode` | int | Numeric HTTP status code, such as 200, 404, or 500. |
+| `HttpResponse.Body` | string | Response body decoded as a wide string. Binary payloads are represented as-is; non-text content may contain unprintable characters. |
+
+## Exceptions / Errors
+
+  - **Namespace import required** — The  `net` namespace must be imported with `using net;`  before `HttpClient` or `HttpResponse` can be referenced.
+  - **Argument type mismatch** — The constructor and every method expect `string` arguments. Passing other primitive types or reference types fails semantic analysis.
+  - **Connection failure** — If the underlying TCP connection cannot be established, `Get` and `Post` throw a runtime exception with a message such as "HTTP Request Failed: Connection".
+  - **Request timeout** — The client enforces a 5-second connection timeout and a 5-second read timeout. Exceeding either throws a runtime exception.
+  - **Use after dispose** — Calling `Get`, `Post`, or reusing the client after `Dispose()` throws "HttpClient: Client is disposed.".
+  - **HTTP-level errors are not exceptions** — Status codes such as 404 and 500 are returned normally in the `HttpResponse`; they do not throw. Inspect `StatusCode` to distinguish success from failure.
+
+## Remarks
+
+  **Base URL binding.** The `baseUrl` passed to the constructor is
+  stored in the native httplib client and applies to every request. The `path`
+  argument is concatenated with the base URL, so it should begin with a forward slash and should not
+  repeat the host or scheme.
+
+  **Synchronous execution.** Both `Get` and `Post`
+  block the calling thread until the request completes, fails, or times out. They are not async methods and
+  cannot be awaited. For concurrent requests, create one client per thread or run each request on its own
+  `Task` and call `Task.Wait`.
+
+  **Timeouts are fixed.** The constructor sets a 5-second connection timeout and a 5-second
+  read timeout. These values are not configurable from ShardScript code. Hosts that require longer timeouts
+  must perform the request outside the VM or use a separate integration layer.
+
+  **POST content type.** `Post` always sends the payload with the
+  header `Content-Type: application/json`. To send other content types, use the
+  generic request overloads in a host integration library.
+
+  **Response body encoding.** The native response bytes are converted to a wide string using
+  a byte-to-wchar expansion. This works for UTF-8 and ASCII text. Binary content is preserved as a string
+  of code points, but manipulation of such content should be done through the byte-oriented stream APIs
+  instead of `HttpResponse.Body`.
+
+  **Resource cleanup.** `HttpClient` wraps a native httplib client
+  pointer. Call `Dispose()` when the client is no longer needed to free the
+  connection pool and native resources. The `defer` statement can be used to
+  guarantee disposal at the end of the enclosing scope.
+
+<Info>
+Treat non-2xx status codes as application-level failures. Always inspect
+  `response.StatusCode` before parsing `response.Body`.
+</Info>
+
+<Warning title="Not implemented">
+The following HTTP features are not exposed by `HttpClient`: custom headers,
+  request methods other than GET and POST (such as PUT, DELETE, PATCH), query-string builders, form
+  encoding, multipart uploads, cookies, redirects, proxy configuration, and async request methods.
+</Warning>
+
+## Examples
+
+  **Basic GET request with explicit disposal.**
+
+// httpclient_get.shard
+```csharp
+using stdio;
+using net;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    client := new HttpClient("http://httpbin.org");
+
+    response: HttpResponse = client.Get("/get");
+    println("Status: " + response.StatusCode);
+
+    if (response.StatusCode == 200)
+    {
+        println(response.Body);
+    }
+
+    client.Dispose();
+}
+```
+
+  **Automatic disposal with `defer`.**
+
+// httpclient_defer.shard
+```csharp
+using stdio;
+using net;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // The Dispose call is scheduled when this scope exits, even if an exception occurs.
+    defer client := new HttpClient("http://localhost:8080");
+
+    response: HttpResponse = client.Get("/health");
+    println("Status: " + response.StatusCode);
+    println("Body: " + response.Body);
+}
+```
+
+  **POST request with a JSON payload.**
+
+// httpclient_post.shard
+```csharp
+using stdio;
+using net;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    defer client := new HttpClient("http://localhost:8080");
+
+    payload: string = "{\"name\": \"shard\", \"version\": 1}";
+    response: HttpResponse = client.Post("/api/records", payload);
+
+    if (response.StatusCode >= 200 && response.StatusCode < 300)
+    {
+        println("Created: " + response.Body);
+    }
+    else
+    {
+        println("Server returned " + response.StatusCode);
+        println(response.Body);
+    }
+}
+```
+
+  **Handling network failures gracefully.**
+
+// httpclient_error.shard
+```csharp
+using stdio;
+using net;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    defer client := new HttpClient("http://localhost:8080");
+
+    try
+    {
+        response: HttpResponse = client.Get("/api/data");
+        println("Status: " + response.StatusCode);
+        println(response.Body);
+    }
+    catch (ex: RuntimeException)
+    {
+        // The base URL or path may be unreachable, or the request timed out.
+        println("Request failed: " + ex.Message);
+    }
+}
+```
+
+  **Inspecting status codes before reading the body.**
+
+// httpclient_status.shard
+```csharp
+using stdio;
+using net;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    defer client := new HttpClient("http://localhost:8080");
+
+    response: HttpResponse = client.Get("/missing-resource");
+
+    if (response.StatusCode == 404)
+    {
+        println("Resource not found");
+    }
+    else if (response.StatusCode >= 500)
+    {
+        println("Server error: " + response.StatusCode);
+    }
+    else if (response.StatusCode == 200)
+    {
+        println("OK: " + response.Body);
+    }
+    else
+    {
+        println("Unexpected status: " + response.StatusCode);
+    }
+}
+```
+
+  **Common mistake: treating the client as a static singleton.**
+
+// httpclient_scope.shard
+```csharp
+using stdio;
+using net;
+
+namespace demo;
+
+// WRONG: a shared mutable client can outlive its intended scope and is
+//        not thread-safe by default.
+// static sharedClient: HttpClient = new HttpClient("http://localhost:8080");
+
+public static func Main() -> void
+{
+    // CORRECT: create and dispose a client in the scope where it is used.
+    defer client := new HttpClient("http://localhost:8080");
+
+    response: HttpResponse = client.Get("/api/status");
+    println(response.StatusCode);
+}
+```
+
+## See also
+
+  - [`HttpServer`](/stdlib/http/http-server) — creating HTTP servers to test client calls against.
+  - [`TCP Sockets`](/stdlib/socket/tcp-sockets) — low-level network streams used by the HTTP client.
+
+## Source
+
+  The `shard.http` implementation ships as part of
+  `ShardScript.Framework`. The native binding for `HttpClient`,
+  `HttpResponse`, and related helpers is in
+  `ShardScript.Framework/system/http.shard.cpp`.

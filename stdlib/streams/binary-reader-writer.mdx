@@ -1,0 +1,298 @@
+---
+title: BinaryReader / BinaryWriter
+---
+
+## Summary
+
+  `BinaryReader` and `BinaryWriter` are typed binary
+  I/O adapters from the `shard.streams` library. They read and write
+  ShardScript primitives from an `IReadableStream` or
+  `IWritableStream` using a fixed, little-endian wire format.
+
+## Syntax
+
+Construct a reader or writer around an existing stream:
+
+// binary_intro.shard
+```csharp
+using io;
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    ms: MemoryStream = new MemoryStream();
+
+    // Wrap the writable stream in a writer.
+    writer: BinaryWriter = new BinaryWriter(ms);
+    writer.Write(42);
+    writer.Flush();
+
+    // Rewind, then wrap the readable stream in a reader.
+    ms.Position = 0;
+    reader: BinaryReader = new BinaryReader(ms);
+    println(reader.ReadInt64());   // 42
+
+    // Both wrappers implement IDisposable and close the underlying stream.
+    reader.Dispose();
+}
+```
+
+## Parameters / Arguments
+
+The constructors take a single stream argument. The stream is stored by reference, not copied.
+
+| Constructor | Parameter | Type | Description |
+| --- | --- | --- | ---
+| `BinaryReader` | stream | IReadableStream | The stream from which bytes are read. |
+| `BinaryWriter` | stream | IWritableStream | The stream to which bytes are written. |
+
+## Returns
+
+Reader methods return typed values decoded from the stream. Writer methods return `void`.
+
+| Member | Return Type | Description |
+| --- | --- | ---
+| `BinaryReader.ReadBoolean()` | bool | 1 byte; true if non-zero, false if zero. |
+| `BinaryReader.ReadByte()` | byte | 1 byte. |
+| `BinaryReader.ReadInt32()` | int | 4 bytes, little-endian, sign-extended to int64. |
+| `BinaryReader.ReadInt64()` | int | 8 bytes, little-endian. |
+| `BinaryReader.ReadDouble()` | double | 8 bytes, little-endian IEEE 754. |
+| `BinaryReader.ReadString()` | string | 4-byte Int32 length prefix, then UTF-8 bytes. |
+| `BinaryReader.ReadBytes(count)` | byte[] | Exactly count bytes. |
+| `BinaryWriter.Write(...)` | void | Overloaded for bool, byte, int, double, string, and byte[]. |
+| `BinaryWriter.WriteInt32(value)` | void | Writes an int as 4 bytes. |
+| `BinaryWriter.WriteInt64(value)` | void | Writes an int as 8 bytes. |
+| `BinaryWriter.Flush()` | void | Flushes the underlying stream. |
+| `Close() / Dispose()` | void | Flushes the writer, disposes the underlying stream, and marks the wrapper disposed. |
+
+## Exceptions / Errors
+
+  - **Unexpected end of stream** —  `ReadBytes`, `ReadString`, and every numeric read throw when fewer bytes than required are available.
+  - **Negative count** —  `ReadBytes(count)` throws if `count` is negative.
+  - **Invalid string length** —  `ReadString` throws if the 4-byte length prefix is negative.
+  - **Object disposed** — Any operation on a reader or writer after `Close` or `Dispose` throws.
+  - **Underlying stream closed** — If the wrapped stream is closed independently, subsequent reads or writes fail.
+
+## Remarks
+
+  **Little-endian wire format.** Multi-byte integers and doubles are always written
+  least-significant byte first. This matches the native helper functions
+  `WriteInt32Raw`, `WriteInt64Raw`, and
+  `WriteDoubleRaw` in the C++ runtime, which copy `sizeof(T)`
+  bytes directly through `reinterpret_cast`. No byte swapping is performed.
+
+  **Integer width is important.** `BinaryWriter.Write(int)` writes
+  8 bytes because ShardScript `int` is internally a 64-bit integer. To produce
+  a 4-byte field for compatibility with external formats, call `WriteInt32`.
+  The corresponding reader `ReadInt32` reads 4 bytes and sign-extends the value
+  to `int64`.
+
+  **Length-prefixed strings.** `WriteString` converts the wide
+  string to UTF-8, writes a 4-byte Int32 byte count, then writes the UTF-8 payload. An empty string
+  is stored as four zero bytes. `ReadString` reads the count, then reads exactly
+  that many bytes, so a malformed or truncated stream throws before any string is returned.
+
+  **Wrapper lifetime.** Both classes implement `IDisposable`.
+  Disposing a reader or writer disposes the underlying stream as well. Because the wrapper only holds
+  a reference, rewinding the underlying `MemoryStream.Position` before creating
+  a new reader is the standard pattern for in-memory round-trips.
+
+<Info>
+BinaryReader and BinaryWriter operate only through the `IReadableStream` and
+  `IWritableStream` interfaces. Any stream that implements those interfaces,
+  including `MemoryStream`, `FileStream`, or
+  `SocketStream`, can be wrapped identically.
+</Info>
+
+## Examples
+
+  **Round-trip all supported primitive types.**
+
+// binary_roundtrip.shard
+```csharp
+using io;
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    ms: MemoryStream = new MemoryStream();
+
+    // Write a mixed sequence of typed values.
+    writer: BinaryWriter = new BinaryWriter(ms);
+    writer.Write(true);
+    writer.Write(42 as byte);
+    writer.WriteInt32(12345);
+    writer.Write(9876543210);
+    writer.Write(3.14159);
+    writer.Write("shard");
+
+    payload: byte[] = [10 as byte, 20 as byte, 30 as byte];
+    writer.Write(payload);
+    writer.Flush();
+
+    // Rewind and read the values back in the exact same order.
+    ms.Position = 0;
+    reader: BinaryReader = new BinaryReader(ms);
+
+    println(reader.ReadBoolean());          // true
+    println(reader.ReadByte());             // 42
+    println(reader.ReadInt32());            // 12345
+    println(reader.ReadInt64());            // 9876543210
+    println(reader.ReadDouble());           // 3.14159
+    println(reader.ReadString());           // shard
+
+    readBack: byte[] = reader.ReadBytes(3);
+    println(readBack[0]);                   // 10
+    println(readBack[1]);                   // 20
+    println(readBack[2]);                   // 30
+
+    reader.Dispose();
+}
+```
+
+  **Int32 versus Int64 width.**
+
+// binary_width.shard
+```csharp
+using io;
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    ms: MemoryStream = new MemoryStream();
+    writer: BinaryWriter = new BinaryWriter(ms);
+
+    // WriteInt32 produces 4 bytes; Write(Int64) produces 8 bytes.
+    writer.WriteInt32(255);
+    writer.Write(255);
+    writer.Flush();
+
+    ms.Position = 0;
+    println(ms.Length);   // 12
+
+    reader: BinaryReader = new BinaryReader(ms);
+    println(reader.ReadInt32());   // 255 (read from 4 bytes)
+    println(reader.ReadInt64());   // 255 (read from 8 bytes)
+
+    reader.Dispose();
+}
+```
+
+  **Seek, read partial data, and detect EOF.**
+
+// binary_seek.shard
+```csharp
+using io;
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    ms: MemoryStream = new MemoryStream();
+    writer: BinaryWriter = new BinaryWriter(ms);
+
+    writer.WriteInt32(100);
+    writer.WriteInt32(200);
+    writer.WriteInt32(300);
+    writer.Flush();
+
+    // Jump to the second integer (4 bytes in) and read only that value.
+    ms.Position = 4;
+    reader: BinaryReader = new BinaryReader(ms);
+    println(reader.ReadInt32());   // 200
+
+    // Read the final value.
+    println(reader.ReadInt32());   // 300
+
+    reader.Dispose();
+}
+```
+
+  **Handle truncated streams safely.**
+
+// binary_eof.shard
+```csharp
+using io;
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    ms: MemoryStream = new MemoryStream();
+    writer: BinaryWriter = new BinaryWriter(ms);
+    writer.WriteInt32(42);
+    writer.Flush();
+
+    // Truncate the stream by one byte so the read cannot complete.
+    ms.Length = 3;
+    ms.Position = 0;
+
+    reader: BinaryReader = new BinaryReader(ms);
+    try
+    {
+        println(reader.ReadInt32());
+    }
+    catch (ex: RuntimeException)
+    {
+        println("caught: not enough bytes for Int32");
+    }
+
+    reader.Dispose();
+}
+```
+
+  **Common mistake: mixing Write and WriteInt32 on the same stream.**
+
+// binary_mistake.shard
+```csharp
+using io;
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    ms: MemoryStream = new MemoryStream();
+    writer: BinaryWriter = new BinaryWriter(ms);
+
+    // Mistake: writing an int with Write() stores 8 bytes, not 4.
+    writer.Write(42);
+    writer.Flush();
+
+    ms.Position = 0;
+    reader: BinaryReader = new BinaryReader(ms);
+
+    // Reading with ReadInt32() consumes only the first 4 bytes and returns 42,
+    // but 4 unread bytes remain in the stream.
+    println(reader.ReadInt32());   // 42
+    println(ms.Length);            // 8 -- four trailing bytes were skipped
+
+    reader.Dispose();
+}
+```
+
+<Warning>
+Always pair the writer width with the matching reader width. Use `WriteInt32`
+  when the consumer expects `ReadInt32`; use `Write(int)`
+  only when the consumer expects `ReadInt64`.
+</Warning>
+
+## See also
+
+  - [`Stream Interfaces`](/stdlib/streams/stream-interfaces) — `IReadableStream` and  `IWritableStream` contracts.
+  - [`MemoryStream`](/stdlib/streams/memory-stream) — byte-array-backed stream for binary round-trips.
+  - [`StreamReader & StreamWriter`](/stdlib/streams/stream-reader-writer) — text-oriented adapters for streams.
+
+## Source
+
+  The `BinaryReader` and `BinaryWriter` implementation ships as part of
+  `ShardScript.Framework`. The native binding is in
+  `ShardScript.Framework/system/streams.shard.cpp`.

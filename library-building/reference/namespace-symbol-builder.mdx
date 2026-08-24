@@ -1,0 +1,267 @@
+---
+title: NamespaceSymbol Builder
+---
+
+## Summary
+
+  The `SymbolBuilder<NamespaceSymbol>` specialization registers a ShardScript namespace
+  inside `SHARDLIB_ENTRYPOINT`. It creates the namespace itself, adds nested namespaces, and
+  attaches namespace-level methods. The builder is the starting point for most native libraries because every class,
+  struct, interface, and enum must live inside a namespace.
+
+## Syntax
+
+  Construct the builder from a `shard::CompilationContext&` and a wide-character namespace
+  name. The resulting object is used immediately; it is not stored for later.
+
+```cpp
+SymbolBuilder<NamespaceSymbol> ns(context, L"mynamespace");
+```
+
+| Method | Parameters | Returns | Description |
+| --- | --- | --- | ---
+| `AddClass` | `L&quot;Name&quot;`, accessibility, linking, initializer lambda | `ClassSymbol*` | Registers a class inside the namespace and returns a builder for it. Only AddClass supports an initializer lambda overload. |
+| `AddStruct` | `L&quot;Name&quot;`, accessibility, linking, initializer lambda | `StructSymbol*` | Registers a struct inside the namespace and returns a builder for it. |
+| `AddInterface` | `L&quot;Name&quot;`, accessibility, initializer lambda | `InterfaceSymbol*` | Registers an interface inside the namespace and returns a builder for it. |
+| `AddEnum` | `L&quot;Name&quot;`, initializer lambda | `EnumSymbol*` | Registers an enum inside the namespace and returns a builder for it. |
+| `AddNamespace` | `L&quot;inner&quot;`, initializer lambda | `NamespaceSymbol*` | Registers a child namespace. |
+| `AddMethod` | `L&quot;Name&quot;`, return type, linking, accessibility | `MethodSymbolBuilder` | Registers a namespace-level method. |
+
+## Parameters / Arguments
+
+  **Constructor arguments**
+
+| Parameter | Type | Description |
+| --- | --- | ---
+| `context` | `shard::CompilationContext&` | The registration context passed to SHARDLIB_ENTRYPOINT. |
+| `name` | `const wchar_t*` | The namespace name as a wide string literal, for example L"mynamespace". |
+
+  **Common registration arguments**
+
+| Parameter | Type | Description |
+| --- | --- | ---
+| `accessibility` | `ACS_PUBLIC`, `ACS_PRIVATE` | Visibility of the registered symbol to ShardScript callers. |
+| `linking` | `LINK_STATIC`, `LINK_INSTANCE` | Whether the member belongs to the type itself or to an instance. |
+| `return type` | `TYPE_VOID`, `TYPE_INT`, `TYPE_DOUBLE`, `TYPE_STRING`, `TYPE_BOOL`, ... | The ShardScript return type of a method or property. |
+| `initializer lambda` | `std::function<void(SymbolBuilder<T>)>` | A callback that receives a nested builder for the new symbol. |
+
+## Returns
+
+  The constructor does not return a value. The methods return pointers or builder objects that let you continue
+  registration:
+
+  - `AddClass`, `AddStruct`,  `AddInterface`, `AddEnum`, and  `AddNamespace` return a pointer to the newly created symbol.
+  - `AddMethod` returns a method builder that supports  `.AddParameter(...)` and `.SetCallback(...)`.
+
+## Exceptions / Errors
+
+  - **Duplicate namespace name** — Registering a namespace whose name already exists in the same compilation context may produce a semantic registration error or overwrite behavior depending on the runtime version. Use a unique name for each library.
+  - **Invalid accessibility** — Passing an accessibility value other than the `ACS_*` constants is a compile-time error in C++.
+  - **Missing callback** — A namespace-level method created with  `AddMethod` that never calls `.SetCallback(...)` resolves in ShardScript but does nothing when invoked.
+  - **C++ exception during registration** — Throwing from inside the initializer lambda or from `SHARDLIB_ENTRYPOINT` aborts library load.
+
+## Remarks
+
+<Info title="Native library shape">
+A ShardScript native library is any shared library (`.dll` on Windows, `.so` on Linux, `.dylib` on macOS) that exports the two C-linkage symbols `ShardLib_GetMetadata` and `ShardLib_EntryPoint`. It can be built from one or many C++ source files, live inside `ShardScript.Framework` or in a completely separate project, and links against the ShardScript runtime shared library using headers from `ShardScript/include`. For the full registration contract, see `native-library-overview.mdx`.
+</Info>
+
+  **Every symbol lives in a namespace.** Even a library that exposes only one utility method should
+  create a namespace first. The namespace name becomes the top-level import name in ShardScript source code.
+
+  **Namespaces can be nested.** Call `AddNamespace` on an existing namespace
+  builder. Inside the lambda, the inner builder has the same API and can itself contain more namespaces, types, and
+  methods. The full name is formed by concatenating parent and child names with a dot.
+
+  **Namespace-level methods are static.** They are called through the namespace name, not through an
+  instance, so they are registered with `LINK_STATIC`. The first real argument is at index
+  `0` inside the callback.
+
+  **Registration order matters.** A namespace must be created before any type or method that belongs to
+  it is added. Types and methods cannot be moved between namespaces after registration.
+
+<Info>
+Keep namespace names stable. Changing the namespace name in the C++ registration breaks every ShardScript import
+  statement that references the old name.
+</Info>
+
+## Examples
+
+  **Single namespace with a namespace-level method.** This is the smallest useful library surface:
+  one namespace and one static method.
+
+// geometry.shard.cpp
+```cpp
+#include <ShardScript.hpp>
+
+using namespace shard;
+
+static ObjectInstance* compute_area(const CallState& context)
+{
+    // A static namespace method: the first real argument is at index 0.
+    std::int64_t width = context.Args[0]->AsInteger();
+    std::int64_t height = context.Args[1]->AsInteger();
+    std::int64_t area = width * height;
+
+    return context.Collector.FromValue(area);
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> geometry(context, L"geometry");
+
+    geometry.AddMethod(L"RectangleArea", TYPE_INT, LINK_STATIC, ACS_PUBLIC)
+            .AddParameter(L"width", TYPE_INT)
+            .AddParameter(L"height", TYPE_INT)
+            .SetCallback(&compute_area);
+}
+```
+
+ShardScript usage:
+
+```csharp
+using stdio;
+using geometry;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    area: int = geometry.RectangleArea(10, 20);
+    println(area);   // 200
+}
+```
+
+  **Nested namespaces.** The outer builder creates an inner namespace, and the inner builder registers
+  a type. The full name in ShardScript is `graphics.shapes.Rectangle`.
+
+// graphics.shard.cpp
+```cpp
+#include <ShardScript.hpp>
+
+using namespace shard;
+
+static FieldSymbol* g_Rectangle_Width = nullptr;
+static FieldSymbol* g_Rectangle_Height = nullptr;
+
+static ObjectInstance* rectangle_area(const CallState& context)
+{
+    // Instance method: this is Args[0], width and height follow.
+    ObjectInstance* self = context.Args[0];
+    std::int64_t width = self->GetField(g_Rectangle_Width)->AsInteger();
+    std::int64_t height = self->GetField(g_Rectangle_Height)->AsInteger();
+
+    return context.Collector.FromValue(width * height);
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> graphics(context, L"graphics");
+
+    graphics.AddNamespace(L"shapes", [](SymbolBuilder<NamespaceSymbol> shapes)
+    {
+        shapes.AddClass(L"Rectangle", ACS_PUBLIC, LINK_INSTANCE, [](SymbolBuilder<ClassSymbol> rectangle)
+        {
+            g_Rectangle_Width = rectangle.AddField(L"Width", TYPE_INT, LINK_INSTANCE, ACS_PUBLIC);
+            g_Rectangle_Height = rectangle.AddField(L"Height", TYPE_INT, LINK_INSTANCE, ACS_PUBLIC);
+
+            rectangle.AddMethod(L"Area", TYPE_INT, LINK_INSTANCE, ACS_PUBLIC)
+                     .SetCallback(&rectangle_area);
+        });
+    });
+}
+```
+
+ShardScript usage:
+
+```csharp
+using stdio;
+using graphics.shapes;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    r: Rectangle = new Rectangle();
+    r.Width = 10;
+    r.Height = 20;
+
+    area: int = r.Area();
+    println(area);   // 200
+}
+```
+
+  **Namespace with multiple nested utilities.** A library can expose several namespaces from a single
+  entry point, each containing its own methods and types.
+
+// converters.shard.cpp
+```cpp
+#include <ShardScript.hpp>
+
+using namespace shard;
+
+static ObjectInstance* convert_to_fahrenheit(const CallState& context)
+{
+    std::int64_t celsius = context.Args[0]->AsInteger();
+    std::int64_t fahrenheit = (celsius * 9 / 5) + 32;
+
+    return context.Collector.FromValue(fahrenheit);
+}
+
+static ObjectInstance* meters_to_centimeters(const CallState& context)
+{
+    std::int64_t meters = context.Args[0]->AsInteger();
+    std::int64_t centimeters = meters * 100;
+
+    return context.Collector.FromValue(centimeters);
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> converters(context, L"converters");
+
+    converters.AddNamespace(L"temperature", [](SymbolBuilder<NamespaceSymbol> temperature)
+    {
+        temperature.AddMethod(L"CelsiusToFahrenheit", TYPE_INT, LINK_STATIC, ACS_PUBLIC)
+                   .AddParameter(L"celsius", TYPE_INT)
+                   .SetCallback(&convert_to_fahrenheit);
+    });
+
+    converters.AddNamespace(L"length", [](SymbolBuilder<NamespaceSymbol> length)
+    {
+        length.AddMethod(L"MetersToCentimeters", TYPE_INT, LINK_STATIC, ACS_PUBLIC)
+              .AddParameter(L"meters", TYPE_INT)
+              .SetCallback(&meters_to_centimeters);
+    });
+}
+```
+
+ShardScript usage:
+
+```csharp
+using stdio;
+using converters.temperature;
+using converters.length;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    temp: int = temperature.CelsiusToFahrenheit(100);
+    len: int = length.MetersToCentimeters(3);
+
+    println(temp);   // 212
+    println(len);    // 300
+}
+```
+
+## See also
+
+  - [`library-building/class-symbol-builder`](/library-building/reference/class-symbol-builder) — registering classes inside a namespace.
+  - [`library-building/shardlib-entrypoint`](/library-building/reference/shardlib-entrypoint) — the library entry point.
+  - [`library-building/library-build-setup`](/library-building/how-to/library-build-setup) — CMake build setup.
+
+## Source
+
+  The native side of this API is implemented in `shard/semantic/SymbolBuilder.hpp`.
+  View the source on GitHub: `https://github.com/Rikitav/ShardScript/blob/main/ShardScript/include/shard/semantic/SymbolBuilder.hpp`.

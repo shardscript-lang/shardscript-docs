@@ -1,0 +1,318 @@
+---
+title: StreamReader / StreamWriter
+---
+
+## Summary
+
+  `StreamReader` and `StreamWriter` are text-oriented
+  adapters in the `io` namespace. They decode UTF-8 from an
+  `IReadableStream` and encode UTF-8 to an `IWritableStream`,
+  exposing line-based and whole-stream text operations. Both implement `IDisposable`;
+  disposing the wrapper also disposes the underlying stream.
+
+## Syntax
+
+  Both classes are instantiated with a single constructor argument. The wrapper stores the stream
+  reference internally and tracks its own disposed state.
+
+| Constructor | Description |
+| --- | ---
+| `new StreamReader(stream: IReadableStream)` | Creates a reader that decodes UTF-8 text from the supplied stream. |
+| `new StreamWriter(stream: IWritableStream)` | Creates a writer that encodes UTF-8 text to the supplied stream. |
+
+| StreamReader Member | Signature |
+| --- | ---
+| `ReadLine()` | `func ReadLine() -> string` |
+| `ReadToEnd()` | `func ReadToEnd() -> string` |
+| `Read()` | `func Read() -> int` |
+| `Close()` | `func Close() -> void` |
+| `Dispose()` | `func Dispose() -> void` |
+
+| StreamWriter Member | Signature |
+| --- | ---
+| `Write(value)` | `func Write(value: string) -> void` |
+| `WriteLine(value)` | `func WriteLine(value: string) -> void` |
+| `Flush()` | `func Flush() -> void` |
+| `Close()` | `func Close() -> void` |
+| `Dispose()` | `func Dispose() -> void` |
+
+## Parameters / Arguments
+
+| Member | Parameters | Description |
+| --- | --- | ---
+| `StreamReader.ReadLine()` | *none* | Reads bytes until a newline (0x0A) or EOF is reached. |
+| `StreamReader.ReadToEnd()` | *none* | Reads all remaining bytes and decodes them as UTF-8. |
+| `StreamReader.Read()` | *none* | Reads one complete UTF-8 codepoint and returns its Unicode scalar value. |
+| `StreamWriter.Write(value)` | `value: string` | Encodes the string as UTF-8 and writes it to the stream. |
+| `StreamWriter.WriteLine(value)` | `value: string` | Writes the string followed by a single newline (0x0A). |
+| `StreamWriter.Flush()` | *none* | Flushes the underlying stream if it supports flushing. |
+| `Close / Dispose` | *none* | Flushes, disposes the underlying stream, and marks the wrapper as disposed. |
+
+## Returns
+
+| Member | Return Type | Meaning |
+| --- | --- | ---
+| `StreamReader.ReadLine()` | `string` | The line content without the trailing newline; empty string at EOF. |
+| `StreamReader.ReadToEnd()` | `string` | All remaining decoded text; empty string if the reader is already at EOF. |
+| `StreamReader.Read()` | `int` | The Unicode scalar value (0–0x10FFFF), or -1 at EOF. |
+| `StreamWriter.Write(value)` | `void` | Nothing. The bytes are forwarded to the underlying stream. |
+| `StreamWriter.WriteLine(value)` | `void` | Nothing. Appends a newline byte after the encoded string. |
+| `StreamWriter.Flush()` | `void` | Nothing. Delegates to the wrapped stream. |
+| `Close / Dispose` | `void` | Nothing. |
+
+## Exceptions / Errors
+
+  - **RuntimeException — Invalid UTF-8 sequence**  `StreamReader.Read()` throws when the leading byte or its continuation bytes do not form a valid UTF-8 codepoint.
+  - **RuntimeException — Cannot access a disposed StreamReader**  Any call after `Close()` or `Dispose()` fails.
+  - **RuntimeException — Cannot access a disposed StreamWriter**  Any call after `Close()` or `Dispose()` fails.
+  - **RuntimeException — Stream does not support Read / Write**  Thrown by the underlying byte stream if the wrapped object does not implement the expected interface method.
+  - **RuntimeException — Cannot access a closed stream**  Operations on a closed underlying stream (for example, a disposed `MemoryStream`) fail before the reader or writer can buffer data.
+
+## Remarks
+
+  **UTF-8 only.** The current implementation hard-codes UTF-8. There is no constructor
+  overload for selecting `Encoding.ASCII`, `Encoding.UTF8`,
+  or other encodings. Strings are converted through the runtime's wide-character/UTF-8 helpers before
+  being written or after being read.
+
+  **Newline handling.** `WriteLine` always appends a single
+  `\n` byte (0x0A), regardless of platform. `ReadLine`
+  stops at the first `\n` it encounters and does not include it in the result.
+  If a source uses `\r\n` line endings, the carriage return remains at the end
+  of the returned string unless you trim it yourself.
+
+  **EOF conventions.** `ReadLine` returns an empty string at EOF.
+  Because an empty string is also a valid line value, the standard idiom is to call it repeatedly
+  until the returned length is zero. `Read()` returns -1 at EOF, and
+  `ReadToEnd()` returns an empty string when no bytes remain.
+
+  **Dispose cascades.** `Close()` and
+  `Dispose()` are aliases for the same implementation on both classes. They
+  flush the writer, call `Dispose()` on the underlying stream, and then set
+  the wrapper's internal disposed flag. After disposal, both the wrapper and the wrapped stream are
+  unusable.
+
+  **Buffering.** `StreamWriter` does not maintain a separate
+  character buffer; it encodes each string and forwards the bytes immediately.
+  `StreamReader.Read()` allocates a temporary four-byte array to decode a
+  complete codepoint. `ReadLine` and `ReadToEnd` accumulate
+  bytes in native vectors and perform a single UTF-8 to wide-string conversion at the end.
+
+<Warning title="Async wrappers not implemented">
+`StreamReader` and `StreamWriter` do not expose async
+  members such as `ReadLineAsync` or `WriteLineAsync`.
+  If you need async I/O, use the `ReadAsync` / `WriteAsync`
+  methods on the underlying stream directly, or run the synchronous reader/writer methods inside an
+  async method.
+</Warning>
+
+## Examples
+
+  **Line-oriented read and write over MemoryStream.**
+
+// stream_reader_writer_lines.shard
+```csharp
+using stdio;
+using io;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    ms: MemoryStream = new MemoryStream();
+
+    writer: StreamWriter = new StreamWriter(ms);
+    writer.WriteLine("hello");
+    writer.WriteLine("world");
+    writer.Flush();
+
+    // Rewind before reading; writing leaves the position at the end.
+    ms.Position = 0;
+
+    reader: StreamReader = new StreamReader(ms);
+    line1: string = reader.ReadLine();
+    line2: string = reader.ReadLine();
+    eof: string = reader.ReadLine();
+
+    println(line1);   // hello
+    println(line2);   // world
+    println(eof);     // ""  (empty string means EOF)
+
+    reader.Dispose();
+    writer.Dispose();
+}
+```
+
+  **Reading the entire remaining content with ReadToEnd.**
+
+// stream_reader_writer_to_end.shard
+```csharp
+using stdio;
+using io;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    ms: MemoryStream = new MemoryStream();
+
+    writer: StreamWriter = new StreamWriter(ms);
+    writer.Write("alpha");
+    writer.WriteLine(" beta");
+    writer.Flush();
+
+    ms.Position = 0;
+
+    reader: StreamReader = new StreamReader(ms);
+    all: string = reader.ReadToEnd();
+
+    println(all);   // alpha beta\n
+
+    reader.Dispose();
+    writer.Dispose();
+}
+```
+
+  **Reading individual Unicode codepoints.**
+
+// stream_reader_codepoints.shard
+```csharp
+using stdio;
+using io;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    ms: MemoryStream = new MemoryStream();
+
+    writer: StreamWriter = new StreamWriter(ms);
+    writer.Write("AΩ🔥");
+    writer.Flush();
+
+    ms.Position = 0;
+
+    reader: StreamReader = new StreamReader(ms);
+
+    cp1: int = reader.Read();   // 'A'  -> 65
+    cp2: int = reader.Read();   // 'Ω'  -> 937
+    cp3: int = reader.Read();   // '🔥' -> 128293
+    cp4: int = reader.Read();   // EOF  -> -1
+
+    println(cp1);
+    println(cp2);
+    println(cp3);
+    println(cp4);
+
+    reader.Dispose();
+    writer.Dispose();
+}
+```
+
+  **Counting lines in a file.**
+
+// stream_reader_file_lines.shard
+```csharp
+using stdio;
+using io;
+using filesystem;
+using async;
+
+namespace demo;
+
+public static async func CountLines(path: string) -> Task
+{
+    fs: FileStream = new FileStream(path, FileMode.Open, FileAccess.Read);
+    defer fs.Dispose();
+
+    reader: StreamReader = new StreamReader(fs);
+    defer reader.Dispose();
+
+    count: int = 0;
+    while (true)
+    {
+        line: string = reader.ReadLine();
+        if (line == "")
+        {
+            break;
+        }
+
+        count = count + 1;
+    }
+
+    println("total lines: " + count);
+}
+
+public static func Main() -> void
+{
+    task: Task = CountLines("D:/temp/shard_input.txt");
+    Task.Wait(task);
+}
+```
+
+  **Common mistakes and edge cases.**
+
+// stream_reader_writer_edge_cases.shard
+```csharp
+using stdio;
+using io;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Mistake 1: Forgetting to rewind the MemoryStream before reading.
+    ms: MemoryStream = new MemoryStream();
+    writer: StreamWriter = new StreamWriter(ms);
+    writer.WriteLine("data");
+    writer.Flush();
+
+    // ms.Position is still at the end; ReadLine returns "" immediately.
+    readerAtEnd: StreamReader = new StreamReader(ms);
+    empty: string = readerAtEnd.ReadLine();
+    println("at end: '" + empty + "'");   // at end: ''
+    readerAtEnd.Dispose();
+
+    // Correct: rewind first.
+    ms.Position = 0;
+    reader: StreamReader = new StreamReader(ms);
+    line: string = reader.ReadLine();
+    println("rewound: '" + line + "'");   // rewound: 'data'
+    reader.Dispose();
+
+    // Mistake 2: Using a reader after disposing it.
+    ms2: MemoryStream = new MemoryStream();
+    reader2: StreamReader = new StreamReader(ms2);
+    reader2.Dispose();
+
+    // This would throw: Cannot access a disposed StreamReader.
+    // reader2.ReadLine();
+
+    // Mistake 3: Expecting ReadLine to strip \\r from \\r\\n files.
+    ms3: MemoryStream = new MemoryStream();
+    writer3: StreamWriter = new StreamWriter(ms3);
+    writer3.Write("windows\\r\\n");   // simulate a CRLF source
+    writer3.Flush();
+    ms3.Position = 0;
+
+    reader3: StreamReader = new StreamReader(ms3);
+    crlfLine: string = reader3.ReadLine();
+    println("last char code: " + crlfLine[crlfLine.Length - 1]);   // 13 ('\\r')
+    reader3.Dispose();
+
+    writer.Dispose();
+    writer3.Dispose();
+}
+```
+
+## See also
+
+  - [`Stream Interfaces`](/stdlib/streams/stream-interfaces) — `IReadableStream`,  `IWritableStream`, and `IDisposable` contracts.
+  - [`BinaryReader & BinaryWriter`](/stdlib/streams/binary-reader-writer) — typed reading and writing over streams.
+  - [`MemoryStream`](/stdlib/streams/memory-stream) — in-memory byte buffer for reader/writer examples.
+
+## Source
+
+  The `StreamReader` and `StreamWriter` implementation ships as part of
+  `ShardScript.Framework`. The native binding is in
+  `ShardScript.Framework/system/streams.shard.cpp`.

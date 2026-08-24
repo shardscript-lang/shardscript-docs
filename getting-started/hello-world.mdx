@@ -1,0 +1,96 @@
+---
+title: Hello World
+---
+
+## Prerequisites
+
+  - A working ShardScript installation. Follow the `Installation` guide if you have not installed the interpreter yet.
+  - A text editor. Any editor that edits plain text works; syntax highlighting for `.shard`  files is optional.
+  - A terminal where you can run the `shard` command.
+
+## Scenario
+
+  You will create a minimal ShardScript program, compile and run it, and then extend it to read a name from
+  the console and print a personalized greeting. By the end you will know how to structure a source file,
+  import a namespace, declare an entry point, and run the interpreter.
+
+## Step-by-Step Instructions
+
+  **1. Create a new file.**
+
+  Open your editor and create a file named `hello.shard` in an empty directory.
+
+  **2. Add the program structure.**
+
+  Every ShardScript file lives in a namespace. The entry point is a public static method named
+  `Main` that returns `void`. To write to the console, import
+  the `stdio` namespace.
+
+// hello.shard
+```csharp
+using stdio;
+
+public func Main() -> void
+{
+    println("Hello, World!");
+}
+```
+
+  **3. Run the program.**
+
+  Open a terminal in the same directory and run the interpreter with the source file as a positional
+  argument.
+
+// run.sh
+```bash
+shard hello.shard
+```
+
+  **4. Read input and personalize the greeting.**
+
+  Change the program to ask for a name and print a greeting that uses the entered value. The
+  `input` function reads one line from the console.
+
+// hello.shard
+```csharp
+using stdio;
+
+public func Main() -> void
+{
+    name: string = input("Enter your name: ");
+    println("Hello, " + name + "!");
+}
+```
+
+  **5. Run the extended program.**
+
+// run.sh
+```bash
+shard hello.shard
+```
+
+## Expected Output
+
+  For the first version you should see:
+
+// output.txt
+```bash
+Hello, World!
+```
+
+  For the personalized version, type a name when prompted:
+
+// output.txt
+```bash
+Enter your name: shard
+Hello, shard!
+```
+
+## What&apos;s next?
+
+  - Learn the language fundamentals in `Variables and Types`.
+  - Explore the standard library starting with `Console I/O`.
+  - Read `Runtime Architecture` to understand how your source becomes bytecode.
+  - If you want to compile the interpreter itself, follow `Building from Source`.
+  - See the language at a glance in `Feature Tour` and `Type System`.
+  - Learn how to organize and run projects in `Project Configuration` and  `The shard CLI`.

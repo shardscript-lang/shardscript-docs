@@ -1,0 +1,303 @@
+---
+title: Accessibility & Linking Values
+---
+
+## Summary
+
+  When a native C++ library registers symbols through `SHARDLIB_ENTRYPOINT`, every
+  namespace, type, field, method, property, indexer, and operator must declare an
+  **accessibility** level and a **linking** mode. Accessibility controls
+  which ShardScript code can see the symbol, and linking controls whether the symbol is bound to a type
+  instance or to the type itself.
+
+## Syntax
+
+  Accessibility and linking values are passed as positional arguments to the
+  `SymbolBuilder` fluent registration API.
+
+```cpp
+// Namespace-level symbol.
+ns.AddMethod(L"Helper", TYPE_VOID, LINK_STATIC, ACS_PUBLIC)
+    .SetCallback(&helper);
+
+// Type-level symbol.
+ns.AddClass(L"Sensor", ACS_PUBLIC, LINK_INSTANCE, [](SymbolBuilder<ClassSymbol> sensor)
+{
+    sensor.AddField(L"_handle", TYPE_NINT, LINK_INSTANCE, ACS_PRIVATE);
+
+    sensor.AddMethod(L"Read", TYPE_DOUBLE, LINK_INSTANCE)
+        .SetCallback(&sensor_read);
+
+    sensor.AddMethod(L"Calibrate", TYPE_VOID, LINK_STATIC)
+        .SetCallback(&sensor_calibrate);
+});
+```
+
+| Value | Kind | Meaning |
+| --- | --- | ---
+| `ACS_PUBLIC` | Accessibility | Visible to any code that can reference the containing namespace. |
+| `ACS_PRIVATE` | Accessibility | Visible only inside the declaring type. |
+| `LINK_STATIC` | Linking | The member belongs to the type itself; no implicit `this` is passed. |
+| `LINK_INSTANCE` | Linking | The member belongs to an instance; `this` is passed as the first argument. |
+
+## Parameters / Arguments
+
+| Parameter | Applies to | Description |
+| --- | --- | ---
+| `ACS_PUBLIC` | Namespace, class, struct, interface, enum, member | Use for every symbol that external ShardScript code is expected to call or instantiate. |
+| `ACS_PRIVATE` | Field, method, property, indexer, operator | Use for implementation details such as backing fields, helper methods, and native handles that must not be touched by callers. |
+| `LINK_STATIC` | Method, property, indexer, operator, constructor | Use when the member does not read or write per-instance state. Static constructors (`AddInit`) also use this value. |
+| `LINK_INSTANCE` | Class, struct, field, method, property, indexer, operator | Use when the member operates on a specific instance. This is the required linking mode for instance fields and instance constructors. |
+
+## Returns
+
+  Accessibility and linking values are not expressions and do not return a value. They are compile-time
+  registration flags that the semantic model stores on the resulting `Symbol`. At
+  runtime the VM uses them to decide whether a call is allowed and whether to pass an implicit
+  `this` argument.
+
+## Exceptions / Errors
+
+  - **Symbol not found at compile time** — A member registered with `ACS_PRIVATE` cannot be referenced from ShardScript code outside the declaring type.
+  - **Static called on an instance, or instance called on a type**  — A method registered with `LINK_STATIC` must be invoked as  `Type.Method()`. A method registered with `LINK_INSTANCE`  must be invoked as `instance.Method()`. Mismatching the linking mode produces a semantic error.
+  - **Instance member in a static type** — A class registered without instance linking on its members but called as an instance type, or a static class that declares instance members, fails validation.
+  - **`this` argument misalignment** — For an instance callback, `context.Args[0]` is `this`. Treating it as the first real parameter causes incorrect reads or a crash.
+  - **Callback never invoked** — Forgetting  `.SetCallback(...)` leaves the symbol registered but without a native target. The call resolves but no code runs.
+
+## Remarks
+
+  **Accessibility boundaries.** `ACS_PUBLIC` is the only value that makes
+  a symbol visible to code outside the declaring type. If you intend a type or member to be consumed by
+  ShardScript programs, mark it `ACS_PUBLIC`. Implementation helpers, backing fields,
+  and native handles should be marked `ACS_PRIVATE` so they cannot be referenced by
+  callers.
+
+  **Linking determines the call contract.** `LINK_INSTANCE` means the
+  runtime will pass the instance pointer as `context.Args[0]`. Real parameters start at
+  index `1`. `LINK_STATIC` means there is no implicit
+  `this`; the first real parameter is at index `0`. The same
+  callback signature is used for both modes, so the callback must read arguments at the correct offsets.
+
+  **Statics for utility types.** A class that contains only static members, such as
+  `shard.math`, is registered with static methods and no instance fields. Constants and
+  factory methods that do not depend on object state should also use `LINK_STATIC`.
+
+  **Instance state and native handles.** Types that wrap OS resources, such as file streams or
+  sockets, store native handles in `LINK_INSTANCE` fields with
+  `ACS_PRIVATE` accessibility. The callback then reads the handle from
+  `context.Args[0]` and performs the operation without exposing the handle to
+  ShardScript callers.
+
+  **Constructors and initializers.** `AddInit` is the registration method
+  for constructors. It is registered with `LINK_STATIC` because the runtime calls it to
+  initialize a freshly allocated instance; the callback receives the new instance as
+  `context.Args[0]` and must return that same instance.
+
+<Info>
+Choose `LINK_STATIC` for anything that does not need `this`,
+  and `ACS_PUBLIC` for anything that callers outside the library must see. The most
+  common native-library bug is a mismatch between the registered linking mode and the call site.
+</Info>
+
+## Examples
+
+  **Public static utility class.** This pattern is common for libraries such as
+  `shard.math`: only static methods and static properties are exposed.
+
+```cpp
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> math(context, L"math");
+
+    math.AddClass(L"Math", ACS_PUBLIC, LINK_STATIC, [](SymbolBuilder<ClassSymbol> mathClass)
+    {
+        mathClass.AddMethod(L"Abs", TYPE_INT, LINK_STATIC, ACS_PUBLIC)
+            .AddParameter(L"value", TYPE_INT)
+            .SetCallback([](const CallState& context)
+            {
+                std::int64_t value = context.Args[0]->AsInteger();
+
+                if (value < 0)
+                {
+                    value = -value;
+                }
+
+                return context.Collector.FromValue(value);
+            });
+    });
+}
+```
+
+  ShardScript usage:
+
+```csharp
+using stdio;
+using math;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    result: int = Math.Abs(-7);
+    println(result);   // 7
+}
+```
+
+  **Public instance type with a private native handle.** The handle is stored in an instance
+  field; callers use instance methods.
+
+```cpp
+static FieldSymbol* g_sensorHandle = nullptr;
+
+static ObjectInstance* sensor_read(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    ObjectInstance* handleObj = self->GetField(g_sensorHandle->SlotIndex);
+    std::int64_t handle = handleObj->AsInteger();
+
+    // Read from the hardware represented by the opaque handle.
+    double sample = static_cast<double>(handle) * 0.125;
+
+    return context.Collector.FromValue(sample);
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> sensors(context, L"sensors");
+
+    sensors.AddClass(L"Sensor", ACS_PUBLIC, LINK_INSTANCE, [](SymbolBuilder<ClassSymbol> sensor)
+    {
+        g_sensorHandle = sensor.AddField(L"_handle", TYPE_INT, LINK_INSTANCE, ACS_PRIVATE);
+
+        sensor.AddInit()
+            .AddParameter(L"id", TYPE_INT)
+            .SetCallback([](const CallState& context)
+            {
+                ObjectInstance* self = context.Args[0];
+                ObjectInstance* id = context.Args[1];
+                self->SetField(g_sensorHandle->SlotIndex, id);
+                return self;
+            });
+
+        sensor.AddMethod(L"Read", TYPE_DOUBLE, LINK_INSTANCE, ACS_PUBLIC)
+            .SetCallback(&sensor_read);
+
+        sensor.AddMethod(L"Count", TYPE_INT, LINK_STATIC, ACS_PUBLIC)
+            .SetCallback([](const CallState& context)
+            {
+                // Static helper: no instance state is accessed.
+                return context.Collector.FromValue(0);
+            });
+    });
+}
+```
+
+  ShardScript usage:
+
+```csharp
+using stdio;
+using sensors;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    s: Sensor = new Sensor(1);
+    sample: double = s.Read();
+    println(sample);
+
+    total: int = Sensor.Count();
+    println(total);
+}
+```
+
+  **Private helper inside a type.** A private static method is visible only to other members of
+  the same type. Namespace-level helpers cannot be hidden from the rest of the library, so keep sensitive
+  implementation details inside a private type.
+
+```cpp
+static ObjectInstance* ensure_buffer_size(const CallState& context)
+{
+    ObjectInstance* buffer = context.Args[0];
+    std::int64_t required = context.Args[1]->AsInteger();
+    std::size_t current = buffer->GetArrayLength();
+
+    if (current < static_cast<std::size_t>(required))
+    {
+        ObjectInstance* replacement = context.Collector.AllocateArray(TYPE_BYTE, required);
+        return replacement;
+    }
+
+    return buffer;
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolFactory factory(context.GetSemanticModel().Table.get());
+    SymbolBuilder<NamespaceSymbol> buffers(context, L"buffers");
+
+    buffers.AddClass(L"BufferHelpers", ACS_PUBLIC, LINK_STATIC, [](SymbolBuilder<ClassSymbol> helpers)
+    {
+        ArrayTypeSymbol* byteArray = factory.Array(TYPE_BYTE);
+        helpers.AddMethod(L"EnsureBufferSize", byteArray, LINK_STATIC, ACS_PRIVATE)
+            .AddParameter(L"buffer", byteArray)
+            .AddParameter(L"required", TYPE_INT)
+            .SetCallback(&ensure_buffer_size);
+    });
+}
+```
+
+  **Common mistake: instance callback reading the wrong argument index.** Because
+  `context.Args[0]` is `this`, the first real parameter is at
+  index `1`.
+
+```cpp
+sensor.AddMethod(L"Move", TYPE_VOID, LINK_INSTANCE, ACS_PUBLIC)
+    .AddParameter(L"distance", TYPE_DOUBLE)
+    .SetCallback([](const CallState& context)
+    {
+        // CORRECT: this is Args[0], distance is Args[1].
+        ObjectInstance* self = context.Args[0];
+        double distance = context.Args[1]->AsDouble();
+
+        // WRONG: this would read this as a double.
+        // double distance = context.Args[0]->AsDouble();
+
+        self->SetField(g_positionField->SlotIndex, context.Collector.FromValue(distance));
+        return nullptr;
+    });
+```
+
+  **Common mistake: registering a static member with instance linking.** If a method does not
+  use `this`, register it with `LINK_STATIC` and call it through
+  the type name.
+
+```csharp
+using stdio;
+using sensors;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // CORRECT: Count is static, so it is invoked on the type.
+    total: int = Sensor.Count();
+    println(total);
+
+    // WRONG: Count is not an instance member.
+    // s: Sensor = new Sensor(1);
+    // total = s.Count();
+}
+```
+
+## See also
+
+  - [`library-building/shardlib-entrypoint`](/library-building/reference/shardlib-entrypoint) — registering namespaces, types, and callbacks.
+  - [`library-building/method-symbol-builder`](/library-building/reference/method-symbol-builder) — registering methods and choosing a linking mode.
+  - [`library-building/reading-arguments`](/library-building/how-to/reading-arguments) — reading arguments in native callbacks.
+  - [`library-building/headers-quick-reference`](/library-building/reference/headers-quick-reference) — header locations for runtime helpers.
+
+## Source
+
+  The native side of this API is implemented in `shard/semantic/SymbolBuilder.hpp`.
+  View the source on GitHub: `https://github.com/Rikitav/ShardScript/blob/main/ShardScript/include/shard/semantic/SymbolBuilder.hpp`.

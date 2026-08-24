@@ -1,0 +1,185 @@
+---
+title: Throwing Typed Exceptions from Native Libraries
+---
+
+## Prerequisites
+
+  - A C++20 toolchain and a built ShardScript runtime shared library.
+  - The ShardScript headers in `ShardScript/include` on your include path.
+  - Familiarity with `SHARDLIB_ENTRYPOINT`,  `SymbolBuilder`, and the native callback contract.
+  - Understanding of the `IThrowable` interface and ShardScript  `try`/`catch` semantics.
+
+## Goal
+
+  Register a custom exception class inside a native library and throw it from C++ so that ShardScript code
+  can catch a specific type instead of the generic `RuntimeException`.
+
+## Step-by-Step Instructions
+
+  **1. Include the runtime exception header.**
+
+  Add `<shard/runtime/RuntimeException.hpp>` alongside the usual ShardScript
+  umbrella header.
+
+// mylib.shard.cpp
+```cpp
+#include <ShardScript.hpp>
+#include <shard/runtime/RuntimeException.hpp>
+
+#include <string>
+
+using namespace shard;
+```
+
+  **2. Declare globals for the symbol table and backing fields.**
+
+  The accessor callbacks need to read the backing fields at runtime. Store them as file-scoped globals.
+
+// mylib.shard.cpp
+```cpp
+static SymbolTable* g_symbolTable = nullptr;
+static FieldSymbol* g_messageField = nullptr;
+static FieldSymbol* g_stackTraceField = nullptr;
+static TypeSymbol* g_myExceptionType = nullptr;
+```
+
+  **3. Implement the exception class in the library entry point.**
+
+  Register a class that implements `IThrowable`, exposes `message`
+  and `stack_trace` properties, and caches their backing fields.
+
+// mylib.shard.cpp
+```cpp
+static ObjectInstance* my_exception_get_message(const CallState& context)
+{
+    return context.Args[0]->GetField(g_messageField);
+}
+
+static ObjectInstance* my_exception_get_stack_trace(const CallState& context)
+{
+    return context.Args[0]->GetField(g_stackTraceField);
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    g_symbolTable = context.GetSemanticModel().Table.get();
+
+    SymbolBuilder<NamespaceSymbol> ns(context, L"mylib");
+
+    ns.AddClass(L"MyException", ACS_PUBLIC, LINK_INSTANCE, [](SymbolBuilder<ClassSymbol> exceptionClass)
+    {
+        exceptionClass
+            .Implements(TRAIT_THROWABLE)
+            .AddInit();
+
+        SymbolBuilder<PropertySymbol> messageProp = exceptionClass.AddProperty(
+            L"message", TYPE_STRING, LINK_INSTANCE, ACS_PUBLIC);
+        g_messageField = messageProp.AddBackingField().Get();
+        messageProp.AddGetter()
+            .IsImplementationOf(TRAIT_THROWABLE_getMessage)
+            .SetCallback(&my_exception_get_message);
+
+        SymbolBuilder<PropertySymbol> stackTraceProp = exceptionClass.AddProperty(
+            L"stack_trace", TYPE_STRING, LINK_INSTANCE, ACS_PUBLIC);
+        g_stackTraceField = stackTraceProp.AddBackingField().Get();
+        stackTraceProp.AddGetter()
+            .IsImplementationOf(TRAIT_THROWABLE_getStackTrace)
+            .SetCallback(&my_exception_get_stack_trace);
+
+        g_myExceptionType = exceptionClass.Get();
+    });
+
+    // Register the rest of the library here.
+}
+```
+
+  **4. Add a helper that throws the typed exception.**
+
+  A small helper keeps throw sites readable and consistent.
+
+// mylib.shard.cpp
+```cpp
+static void ThrowMyException(const std::wstring& message)
+{
+    if (g_myExceptionType == nullptr)
+    {
+        throw std::runtime_error("MyException type was not registered");
+    }
+
+    throw shard::runtime_exception(message, g_myExceptionType);
+}
+```
+
+  **5. Throw from a native callback.**
+
+// mylib.shard.cpp
+```cpp
+static ObjectInstance* mylib_DoWork(const CallState& context)
+{
+    auto [value] = GetArgs<std::int64_t>(context);
+    if (value < 0)
+    {
+        ThrowMyException(L"DoWork does not accept negative values");
+    }
+
+    return context.Collector.FromValue(value * 2);
+}
+```
+
+  **6. Catch the specific type in ShardScript.**
+
+// demo.shard
+```csharp
+using stdio;
+using mylib;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    try
+    {
+        MyWorker.DoWork(-5);
+    }
+    catch (ex: MyException)
+    {
+        println("caught MyException: " + ex.message);
+        println("stack trace:");
+        println(ex.stack_trace);
+    }
+    catch (ex: RuntimeException)
+    {
+        println("caught generic RuntimeException");
+    }
+}
+```
+
+## Verification
+
+  Build the library and run the ShardScript program. You should see the typed catch clause execute and the
+  `stack_trace` property should contain the managed call stack at the throw site.
+
+// expected-output.txt
+```plaintext
+caught MyException: DoWork does not accept negative values
+stack trace:
+demo.Main
+demo.Program.Main
+```
+
+  If you comment out the `catch (ex: MyException)` clause, the fallback
+  `RuntimeException` handler should run, proving that the custom type still satisfies
+  the `IThrowable` contract.
+
+## Troubleshooting
+
+  - **Custom type is not caught.** Verify that the class implements `IThrowable` and that both property getters are marked with  `.IsImplementationOf(TRAIT_THROWABLE_getMessage)` and  `.IsImplementationOf(TRAIT_THROWABLE_getStackTrace)` respectively.
+  - **Null backing field.** Make sure  `.AddBackingField()` is called before the getter is registered. The field pointer is needed by the VM when it writes the message and stack trace.
+  - **VM error during mapping.** The exception class must have a parameterless constructor. In native registration, add `.AddInit()` to the class builder.
+  - **Stack trace is empty.** The VM populates  `stack_trace` only for `IThrowable` instances. Ensure the type implements the interface and that the `stack_trace` property is backed by a field.
+
+## See also
+
+  - `library-building/runtime-exception-reference` — API reference for  `shard::runtime_exception`.
+  - `syntax/exceptions` — Language reference for exception handling in ShardScript.
+  - `library-working-with-objects` — How to read and write managed object fields from native callbacks.

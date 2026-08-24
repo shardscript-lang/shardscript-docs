@@ -1,0 +1,163 @@
+---
+title: 'shard::runtime_exception'
+---
+
+## Summary
+
+  `shard::runtime_exception` is the native C++ exception type that the ShardScript
+  virtual machine maps to a managed `IThrowable` instance. Native libraries throw it
+  to surface typed, catchable errors without manually allocating managed objects.
+
+## Syntax
+
+  Include `<shard/runtime/RuntimeException.hpp>` and construct the exception in a
+  native callback.
+
+// runtime_exception_usage.cpp
+```cpp
+#include <shard/runtime/RuntimeException.hpp>
+
+// Throw a generic RuntimeException.
+throw shard::runtime_exception(L"Something went wrong");
+
+// Throw a library-specific exception type.
+throw shard::runtime_exception(L"Connection refused", g_NetworkExceptionType);
+```
+
+  Class declaration:
+
+// RuntimeException.hpp
+```cpp
+namespace shard
+{
+    class runtime_exception : public std::exception
+    {
+    public:
+        runtime_exception(
+            std::wstring message,
+            TypeSymbol* exceptionType = nullptr) noexcept;
+
+        runtime_exception(
+            const wchar_t* message,
+            TypeSymbol* exceptionType = nullptr) noexcept;
+
+        const std::wstring& message() const noexcept;
+        const std::wstring& stack_trace() const noexcept;
+        void set_stack_trace(const std::wstring& trace) noexcept;
+        TypeSymbol* exception_type() const noexcept;
+        const char* what() const noexcept override;
+    };
+}
+```
+
+## Parameters / Arguments
+
+| Parameter | Type | Description |
+| --- | --- | ---
+| `message` | `std::wstring` or `const wchar_t*` | Wide-string message exposed through the managed `IThrowable.message` property. |
+| `exceptionType` | `TypeSymbol*` | Optional managed exception class that implements `IThrowable`. When `nullptr`, the VM uses the built-in `RuntimeException` type. |
+
+## Returns
+
+  The exception object itself carries no managed return value. When the VM catches the C++ exception, it
+  returns a managed `ObjectInstance*` representing the constructed exception.
+
+## Exceptions / Errors
+
+  - **Type is not a class.** If `exceptionType`  is not a `ClassSymbol`, the VM throws a C++ error while mapping the exception.
+  - **Missing parameterless constructor.** The managed exception type must declare a parameterless constructor (via `.AddInit()` in native registration). Without one, mapping fails.
+  - **Missing IThrowable implementation.** The type must implement `IThrowable` and expose backed `message` and  `stack_trace` properties.
+
+## Remarks
+
+  **VM mapping flow.** When a C++ exception escapes a native callback, the VM calls
+  `VirtualMachine::CreateRuntimeException(const std::exception&)`. That function
+  `dynamic_cast`s to `shard::runtime_exception`. If the cast
+  succeeds, the VM extracts the stored `TypeSymbol*`, message, and stack trace and
+  routes to the typed factory `CreateRuntimeException(TypeSymbol*, message, stackTrace)`.
+
+  The typed factory performs the following steps:
+
+  - Resolves the `TypeSymbol*` to a `ClassSymbol*`.
+  - Finds a parameterless constructor and allocates a managed instance through the garbage collector.
+  - Zero-initializes all field slots and runs the constructor.
+  - Resolves the backing fields for `IThrowable.getMessage()` and  `IThrowable.getStackTrace()` by walking the class  `InterfaceMethodMap`.
+  - Writes the message and stack trace into the backing fields.
+
+  **Fallback behavior.** If `exceptionType` is `nullptr`,
+  or if the type cannot be resolved, the VM instantiates the built-in
+  `RuntimeException` class. This keeps existing code that throws plain
+  `std::runtime_error` working unchanged.
+
+  **Stack trace capture.** The VM sets the native stack trace on the exception object before
+  creating the managed instance. The captured trace contains the managed-method full names currently on the
+  VM call stack. If the native library sets a stack trace manually before throwing, that value is preserved.
+
+## Examples
+
+  **Throw a generic RuntimeException from native code.**
+
+// generic_throw.cpp
+```cpp
+#include <ShardScript.hpp>
+
+static ObjectInstance* divide(const CallState& context)
+{
+    auto [left, right] = GetArgs<std::int64_t, std::int64_t>(context);
+    if (right == 0)
+    {
+        throw shard::runtime_exception(L"Division by zero");
+    }
+
+    return context.Collector.FromValue(left / right);
+}
+```
+
+  The ShardScript caller catches it as the built-in `RuntimeException`.
+
+// generic_throw.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    try
+    {
+        math.Divide(10, 0);
+    }
+    catch (ex: RuntimeException)
+    {
+        println(ex.message);
+    }
+}
+```
+
+  **Throw a custom exception type.** For the full registration of the exception class, see the
+  how-to article linked below.
+
+// typed_throw.cpp
+```cpp
+static ObjectInstance* connect(const CallState& context)
+{
+    std::wstring host = std::wstring(context.Args[0]->AsString());
+    if (host.empty())
+    {
+        throw shard::runtime_exception(
+            L"Host name cannot be empty",
+            g_NetworkExceptionType);
+    }
+
+    return context.Collector.FromValue(true);
+}
+```
+
+## See also
+
+  - [`library-building/throwing-typed-exceptions`](/library-building/how-to/throwing-typed-exceptions) — How-To guide for registering and throwing library-specific exception types.
+  - [`syntax/exceptions`](/syntax/control-flow/exceptions) — Language reference for  `try`/`catch`/`throw` and the  `IThrowable` contract.
+
+## Source
+
+  `ShardScript/include/shard/runtime/RuntimeException.hpp`

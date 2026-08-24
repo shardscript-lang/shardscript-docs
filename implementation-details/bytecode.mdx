@@ -1,0 +1,168 @@
+---
+title: Bytecode and OpCodes
+---
+
+## Summary
+
+  ShardScript compiles methods into a flat stream of 16-bit opcodes followed by inline operands. The
+  bytecode, together with type shapes and a string pool, forms the `ProgramVirtualImage`
+  that the virtual machine executes.
+
+## Syntax
+
+  Each instruction is an `OpCode` value followed by zero or more operands:
+
+| Operand kind | Description |
+| --- | ---
+| Immediate literal | An integer, double, or boolean encoded inline. |
+| Local slot index | The zero-based slot of a local variable in the current frame. |
+| Jump offset | A signed byte or instruction offset for branch instructions. |
+| String pool index | An index into the module-wide string pool. |
+| Symbol reference | A resolved TypeSymbol, MethodSymbol, FieldSymbol, or ConstructorSymbol. |
+
+## Parameters / Arguments
+
+  Operands are decoded by the VM&apos;s instruction decoder. The size and interpretation of operands are
+  fixed by the opcode definition. For example, `LOADCONST_INTEGER64` is followed by an
+  8-byte signed integer, while `JUMP` is followed by a 4-byte offset.
+
+## Returns
+
+  Most opcodes leave a value on the evaluation stack, store a value into a local or field, or alter control
+  flow. The `RETURN` opcode pops the current frame and leaves the return value on the
+  caller&apos;s evaluation stack.
+
+## Exceptions / Errors
+
+  - **Invalid opcode.** A corrupted or misaligned bytecode stream may produce an opcode the VM does not recognise.
+  - **Stack underflow.** An instruction that expects operands may fail if the evaluation stack does not contain enough values.
+  - **Type mismatch.** Although the compiler prevents this, a malformed image may pass the wrong type to a primitive operation.
+
+## Remarks
+
+  The instruction set groups naturally into categories. The following list covers the major opcode families
+  emitted today.
+
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Constants & locals</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['LOADCONST_NULL', 'LOADCONST_INTEGER8', 'LOADCONST_INTEGER64', 'LOADCONST_NATIVE_INTEGER', 'LOADCONST_STRING', 'LOAD_LOCAL', 'LOAD_ARG', 'STORE_LOCAL', 'STORE_ARG'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Stack control</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['POP', 'DUP', 'NOP', 'HALT'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Arithmetic</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['MATH_ADDITION', 'MATH_SUBTRACT', 'MATH_MULTIPLY', 'MATH_MODULO', 'MATH_POWER', 'MATH_SHL', 'MATH_SHR'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Comparison & logic</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['COMPARE_EQUAL', 'COMPARE_NOTEQUAL', 'COMPARE_GREATER', 'COMPARE_GREATER_OR_EQUAL', 'COMPARE_LESS', 'COMPARE_LESS_OR_EQUAL', 'LOGICAL_AND', 'LOGICAL_NOT'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Control flow</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['JUMP', 'JUMP_TRUE', 'JUMP_FALSE', 'BR_NULL', 'JUMP_TABLE', 'RETURN', 'THROW'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Calls</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['CALLMETHODSYMBOL', 'CALLDELEGATE', 'CALLINTERFACE'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Objects & fields</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['NEWOBJECT', 'NEWDELEGATE', 'LOADFIELD', 'STOREFIELD', 'LOADSTATICFIELD', 'STORESTATICFIELD'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Arrays & ranges</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['NEWARRAY', 'NEWARRAY_DYNAMIC', 'LOADARRAYELEMENT', 'STOREARRAYELEMENT', 'ARRAYLENGTH', 'CREATERANGE'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Types</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['ISINSTANCE', 'CAST', 'CAST_AS', 'CASTPRIMITIVE'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Exceptions</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['ENTER_TRY', 'LEAVE_TRY', 'RETHROW', 'END_CATCH', 'LOAD_CURRENT_EXCEPTION', 'STORE_CURRENT_EXCEPTION'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">defer</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['DEFER', 'DEFER_BREAK', 'DEFER_DRAIN'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+
+## Examples
+
+  Use the interpreter&apos;s `-d` flag to disassemble a compiled program:
+
+// disassemble.sh
+```bash
+shard -d hello.shard
+```
+
+  A simple conditional produces bytecode similar to this:
+
+// disassembly.txt
+```text
+; Offset    Opcode      Arguments
+SS_0000:   ldc.bool    false
+SS_0003:   jmpf        SS_003F
+SS_000D:   ldstr       pool[0]
+SS_0017:   call        stdio.println
+SS_0021:   jmp         SS_003F
+SS_002B:   ldstr       pool[10]
+SS_0035:   call        stdio.println
+SS_003F:   ldstr       pool[20]
+SS_0049:   call        stdio.println
+```
+
+## See also
+
+  - [`Compiler Pipeline`](/implementation-details/compiler-pipeline) — how bytecode is produced.
+  - [`Virtual Machine Internals`](/implementation-details/virtual-machine) — how bytecode is executed.
+
+## Source
+
+  The opcode enum and emission logic live in the ShardScript compiler and VM sources. See the ShardScript
+  repository for the authoritative opcode list.

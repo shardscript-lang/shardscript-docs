@@ -1,0 +1,134 @@
+---
+title: Special Directories
+---
+
+## Summary
+
+  The `SpecialDirectories` static class in the `filesystem`
+  namespace exposes read-only paths to common platform directories: the user home folder, the current
+  working directory, application data folders, shared application data, documents, and the desktop. On
+  Windows the properties wrap `SHGetKnownFolderPath`; on Linux and other POSIX
+  systems they resolve XDG environment variables and fall back to standard paths under
+  `$HOME`.
+
+## Syntax
+
+  All members are static properties. Reference them through a `using filesystem;`
+  directive.
+
+// special_directories_intro.shard
+```csharp
+using stdio;
+using filesystem;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    println("Home: " + SpecialDirectories.Home);
+    println("Current: " + SpecialDirectories.CurrentDirectory);
+    println("App data: " + SpecialDirectories.ApplicationData);
+}
+```
+
+## Parameters / Arguments
+
+| Property | Type | Description |
+| --- | --- | ---
+| `Home` | string | The current user home directory. |
+| `CurrentDirectory` | string | The process working directory at the time of access. |
+| `ApplicationData` | string | Roaming application data on Windows; $XDG_CONFIG_HOME or ~/.config on POSIX. |
+| `LocalApplicationData` | string | Local application data on Windows; $XDG_DATA_HOME or ~/.local/share on POSIX. |
+| `CommonApplicationData` | string | ProgramData on Windows; first entry of $XDG_DATA_DIRS or /usr/local/share on POSIX. |
+| `MyDocuments` | string | The user documents folder. |
+| `Desktop` | string | The user desktop folder. |
+
+## Returns
+
+| Property | Return Type | Notes |
+| --- | --- | ---
+| `Home` | string | On Windows this is FOLDERID_Profile; on POSIX it is $HOME, then getpwuid(pw_dir). |
+| `CurrentDirectory` | string | Absolute path resolved by GetCurrentDirectory on Windows and getcwd on POSIX. |
+| `ApplicationData` | string | Windows: FOLDERID_RoamingAppData. POSIX: $XDG_CONFIG_HOME, then ~/.config. |
+| `LocalApplicationData` | string | Windows: FOLDERID_LocalAppData. POSIX: $XDG_DATA_HOME, then ~/.local/share. |
+| `CommonApplicationData` | string | Windows: FOLDERID_ProgramData. POSIX: first path in $XDG_DATA_DIRS, then /usr/local/share. |
+| `MyDocuments` | string | Windows: FOLDERID_Documents. POSIX: $HOME/Documents. |
+| `Desktop` | string | Windows: FOLDERID_Desktop. POSIX: $HOME/Desktop. |
+
+## Exceptions / Errors
+
+  - **Empty string on failure** — If a directory cannot be resolved, the property returns an empty string rather than throwing. Callers should validate the result before using it as a path.
+  - **Directory may not exist** — The returned path is not verified to exist on disk. For example, a POSIX system may not have a  `~/Documents` folder.
+
+## Remarks
+
+  **Static class, no instances.** `SpecialDirectories` is registered with
+  `LINK_STATIC`. All properties are static getters; there is no constructor.
+
+  **Platform conventions.** The property names follow .NET conventions so that code ported
+  from .NET or written by developers familiar with it is easy to recognize. The underlying resolution,
+  however, respects the host operating system: Windows known folders via GUIDs and POSIX folders via the
+  XDG Base Directory Specification and `passwd` database.
+
+  **Snapshot semantics.** `CurrentDirectory` is evaluated when the
+  property is read. If the process working directory changes between reads, later reads may return a
+  different path. The other properties are derived from user profile and environment state and are
+  effectively stable for the lifetime of the process.
+
+<Info>
+Use `Path.Join` or the string `/` operator to build paths
+  under a special directory rather than concatenating separators manually.
+</Info>
+
+## Examples
+
+  **Building application-specific paths.**
+
+// special_directories_config.shard
+```csharp
+using stdio;
+using filesystem;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    configDir: string = SpecialDirectories.ApplicationData;
+    configPath: string = configDir + "/myapp/settings.txt";
+
+    println("Config path: " + configPath);
+}
+```
+
+  **Listing all special directories.**
+
+// special_directories_list.shard
+```csharp
+using stdio;
+using filesystem;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    println("Home:                  " + SpecialDirectories.Home);
+    println("CurrentDirectory:      " + SpecialDirectories.CurrentDirectory);
+    println("ApplicationData:       " + SpecialDirectories.ApplicationData);
+    println("LocalApplicationData:  " + SpecialDirectories.LocalApplicationData);
+    println("CommonApplicationData: " + SpecialDirectories.CommonApplicationData);
+    println("MyDocuments:           " + SpecialDirectories.MyDocuments);
+    println("Desktop:               " + SpecialDirectories.Desktop);
+}
+```
+
+## See also
+
+  - [`File & Path`](/stdlib/filesystem/file-and-path) — file I/O and path manipulation utilities.
+  - [`Directory and DirectoryInfo`](/stdlib/filesystem/directory-and-directoryinfo) — listing, creating, and inspecting directories.
+  - [`Path Concatenation`](/stdlib/filesystem/path-concatenation) — building paths from multiple segments safely.
+
+## Source
+
+  The filesystem implementation ships as part of `ShardScript.Framework`. The native
+  binding for `SpecialDirectories` is in
+  `ShardScript.Framework/system/filesystem.shard.cpp`.

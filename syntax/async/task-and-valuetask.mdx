@@ -1,0 +1,407 @@
+---
+title: Task and ValueTask
+---
+
+## Summary
+
+  ShardScript provides two task-like types in the `async` namespace:
+  `Task` for void-returning asynchronous operations, and
+  `ValueTask<T>` for operations that produce a typed result. Both
+  implement the awaiter pattern (`IAsyncState`, `IAwaitable`,
+  `IAwaiter`) and integrate with the libuv-based cooperative event loop. The
+  `shard.async` library adds `TaskCompletionSource<T>`,
+  which lets non-async code or native callbacks manually complete a `ValueTask<T>`.
+
+## Syntax
+
+  An `async` method declares `Task` or
+  `ValueTask<T>` as its return type. Inside the method body, use
+  `await` to suspend until an awaitable completes. From synchronous entry points,
+  use `Task.Wait(task)` or `ValueTask.Wait(task)` to pump
+  the event loop until completion.
+
+// task_basic.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public static async func DelayedHello() -> Task
+{
+    println("before delay");
+    await Task.Delay(100);
+    println("after delay");
+}
+
+public static func Main() -> void
+{
+    task: Task = DelayedHello();
+    task.Wait();
+    println("done");
+}
+```
+
+  `ValueTask<T>` is declared with an explicit result type and returns a value
+  with the ordinary `return` statement:
+
+// valuetask_basic.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public static async func FetchNumber() -> ValueTask<int>
+{
+    await Task.Delay(10);
+    return 42;
+}
+
+public static func Main() -> void
+{
+    task: ValueTask<int> = FetchNumber();
+    ValueTask.Wait(task);
+    result: int = task.Result;
+    println(result);
+}
+```
+
+## Parameters / Arguments
+
+| Member | Parameter | Type | Description |
+| --- | --- | --- | ---
+| `Task.Delay(milliseconds)` | `milliseconds` | int | Number of milliseconds to wait before the returned Task completes. |
+| `Task.Wait(task)` | `task` | `Task` | Task to block on. Pumps the event loop until the task leaves PENDING state. |
+| `Task.Shoot(task)` | `task` | `Task` | Marks the task as fire-and-forget so the caller is not bound to its frame. |
+| `Task.Shoot<T>(task)` | `task` | `ValueTask<T>` | Generic overload for ValueTask&lt;T&gt; fire-and-forget. |
+| `ValueTask.Wait(task)` | `task` | `ValueTask<T>` | ValueTask to block on. Pumps the event loop until the task leaves PENDING state. |
+| `ValueTask.FromResult<T>(value)` | `value` | T | Value to store in an already-completed ValueTask&lt;T&gt;. |
+| `TaskCompletionSource<T>.SetResult(value)` | `value` | T | Value to publish through the exposed Task property. |
+| `TaskCompletionSource<T>.SetException(exception)` | `exception` | `Throwable` | Exception to store and re-throw when the task is awaited or waited on. |
+
+## Returns
+
+| Member | Return Type | Description |
+| --- | --- | ---
+| `async func ... -> Task` | `Task` | A reference to the pending or completed void task. |
+| `async func ... -> ValueTask<T>` | `ValueTask<T>` | A reference to the pending or completed task carrying a result of type T. |
+| `Task.Delay(ms)` | `Task` | A task that completes after the libuv timer fires. |
+| `ValueTask.FromResult<T>(value)` | `ValueTask<T>` | An already-completed task containing the supplied value. |
+| `TaskCompletionSource<T>.Task` | `ValueTask<T>` | The ValueTask&lt;T&gt; controlled by the completion source. |
+| `task.Result` | T | The stored result of a completed ValueTask&lt;T&gt;. |
+| `task.IsCompleted` | bool | True when the task is COMPLETED or FAULTED; false while PENDING. |
+
+## Exceptions / Errors
+
+  - **Faulted task on Wait()** — If a task completes with  `FAULTED` state, `Task.Wait` or  `ValueTask.Wait` re-throws the captured exception in the calling frame.
+  - **Faulted task on await** — Awaiting a faulted task calls  `GetResult()`, which raises the stored exception inside the async method so it can be caught with an ordinary `try`/`catch` block.
+  - **Result before completion** — Reading  `ValueTask<T>.Result` while the task is still `PENDING`  returns the default/uninitialized value for the field. Always call `Wait()`  or `await` the task first.
+  - **Type mismatch in async return** — An  `async` method must return `Task` or  `ValueTask<T>`. Returning a plain value type or `void`  from an `async` method fails semantic analysis.
+  - **Missing using async** — `Task`,  `ValueTask<T>`, and `TaskCompletionSource<T>`  live in the `async` namespace. Forgetting `using async;`  produces an unresolved-type error.
+
+## Remarks
+
+  **Self-awaiters.** Both `Task` and
+  `ValueTask<T>` implement `IAwaiter` directly.
+  `GetAwaiter()` returns `this`, so an
+  `await` expression does not allocate a separate awaiter object. This keeps the
+  hot path allocation-free.
+
+  **Lifecycle and rooting.** When an async method starts, the compiler-generated state machine
+  factory allocates the task object and calls `InternalRoot`. Rooting increments the
+  task’s reference count and registers it with the event loop, keeping the task alive across suspensions
+  even if no script variable holds it. On completion, `Complete()` or
+  `SetResult()` releases the frame owner, resumes the continuation, and unroots the
+  task so it becomes eligible for garbage collection.
+
+  **States.** The internal `_state` field uses three values:
+
+| State | Value | Meaning |
+| --- | --- | ---
+| PENDING | 0 | The operation has not finished. |
+| COMPLETED | 1 | The operation finished successfully. |
+| FAULTED | 2 | The operation finished with an exception stored in _exception. |
+
+  **Fire-and-forget.** `Task.Shoot(task)` explicitly releases the task’s
+  frame owner and marks it as fire-and-forget. The task continues to run on the event loop but no longer
+  keeps the caller’s frame alive. At VM shutdown, fire-and-forget tasks are halted cleanly. You can also
+  discard the return value of an async call, which starts the task independently because the rooted task
+  object survives on the event loop; however, `Task.Shoot` is the explicit, supported
+  API for this pattern.
+
+  **Synchronous fast path.** `ValueTask.FromResult<T>(value)`
+  returns a task whose `IsCompleted` property is already `true`.
+  When such a task is awaited, the compiler’s await sequence sees the completed flag and jumps straight to
+  the resume segment without registering a continuation or returning to the event loop. Use this for cached
+  values and trivial synchronous fallbacks inside async APIs.
+
+  **TaskCompletionSource&lt;T&gt;.** This class, provided by the
+  `shard.async` library rather than the core runtime, creates a
+  `ValueTask<T>` that is completed manually. It is useful when native code,
+  callbacks, or another thread must decide when an async operation finishes. Construct the source, expose
+  its `Task` property to awaiters, and call `SetResult` or
+  `SetException` to transition the task to `COMPLETED` or
+  `FAULTED`.
+
+<Info>
+`Task.Wait` and `ValueTask.Wait` are cooperative: they block
+  the calling thread by repeatedly calling `EventLoop.RunOnce()`. Timers and I/O
+  callbacks still drain on the same thread while the caller waits, so the VM remains responsive even though
+  the synchronous entry point is stalled.
+</Info>
+
+<Warning title="Task.WhenAll / Task.WhenAny not implemented">
+Combinators such as `Task.WhenAll` and `Task.WhenAny` are not
+  currently part of the `async` namespace. To wait for multiple tasks, start them and
+  call `Wait()` on each reference individually, or build a custom completion source
+  that tracks the remaining count.
+</Warning>
+
+## Examples
+
+  **Concurrent delays.** Multiple `Task.Delay` calls can be started
+  before any of them are awaited, allowing the timers to run concurrently on the event loop.
+
+// task_concurrent.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    t1: Task = Task.Delay(100);
+    t2: Task = Task.Delay(200);
+    t3: Task = Task.Delay(50);
+
+    t1.Wait();
+    t2.Wait();
+    t3.Wait();
+
+    println("all delays done");
+}
+```
+
+  **ValueTask.FromResult for cached values.** When a result is already known, create a
+  synchronously completed task instead of spinning up an async state machine.
+
+// valuetask_fromresult.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public static func LookupCached(id: int) -> ValueTask<int>
+{
+    if (id == 1)
+    {
+        return ValueTask.FromResult<int>(99);
+    }
+
+    return FetchSlow(id);
+}
+
+public static async func FetchSlow(id: int) -> ValueTask<int>
+{
+    await Task.Delay(10);
+    return id * 2;
+}
+
+public static func Main() -> void
+{
+    cached: ValueTask<int> = LookupCached(1);
+    println(cached.IsCompleted); // true
+    println(cached.Result);      // 99
+
+    slow: ValueTask<int> = LookupCached(5);
+    ValueTask.Wait(slow);
+    println(slow.Result);        // 10
+}
+```
+
+  **TaskCompletionSource with a delayed producer.** The producer is an async method that
+  completes the source after a delay; the consumer awaits the source’s task.
+
+// task_completion_source.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public static async func CompleteAfterDelay(tcs: TaskCompletionSource<string>) -> Task
+{
+    await Task.Delay(50);
+    tcs.SetResult("ready");
+}
+
+public static func Main() -> void
+{
+    tcs: TaskCompletionSource<string> = new TaskCompletionSource<string>();
+    CompleteAfterDelay(tcs);
+
+    task: ValueTask<string> = tcs.Task;
+    ValueTask.Wait(task);
+    println(task.Result); // ready
+}
+```
+
+  **Exception propagation.** Exceptions thrown inside an async method are captured by the
+  task and re-thrown when the task is awaited or waited on.
+
+// task_exception.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public static async func FaultyDelay() -> Task
+{
+    await Task.Delay(10);
+    throw new RuntimeException();
+}
+
+public static func Main() -> void
+{
+    try
+    {
+        Task.Wait(FaultyDelay());
+        println("unreachable");
+    }
+    catch (ex: RuntimeException)
+    {
+        println("caught faulted task");
+    }
+
+    println("done");
+}
+```
+
+  **Catching exceptions inside an async method.** Ordinary
+  `try`/`catch` blocks work across await suspension points.
+
+// task_caught_await.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public static async func FaultyDelay() -> Task
+{
+    await Task.Delay(10);
+    throw new RuntimeException();
+}
+
+public static async func CaughtAwait() -> Task
+{
+    try
+    {
+        await FaultyDelay();
+        println("after await"); // never reached
+    }
+    catch (ex: RuntimeException)
+    {
+        println("caught inside async");
+    }
+}
+
+public static func Main() -> void
+{
+    Task.Wait(CaughtAwait());
+    println("done");
+}
+```
+
+  **Fire-and-forget with Task.Shoot.** The caller does not wait for the background task.
+
+// task_shoot.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public static async func Background() -> Task
+{
+    println("background start");
+    await Task.Delay(100);
+    println("background end");
+}
+
+public static func Main() -> void
+{
+    Task.Shoot(Background());
+    println("main end");
+}
+```
+
+  **Fire-and-forget with ValueTask&lt;T&gt;.** Use the generic overload of
+  `Task.Shoot` when the discarded task carries a result type.
+
+// task_shoot_valuetask.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public static async func Background() -> ValueTask<int>
+{
+    println("background start");
+    await Task.Delay(100);
+    println("background end");
+    return 42;
+}
+
+public static func Main() -> void
+{
+    Task.Shoot<int>(Background());
+    println("main end");
+}
+```
+
+  **Common mistake: reading Result before waiting.** The `Result`
+  property is only meaningful after the task has left the `PENDING` state. The
+  commented-out line below would read the default field value instead of the real result.
+
+// task_result_timing.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public static async func GetValue() -> ValueTask<int>
+{
+    await Task.Delay(10);
+    return 7;
+}
+
+public static func Main() -> void
+{
+    task: ValueTask<int> = GetValue();
+
+    // BUG: do not read Result while the task is still pending.
+    // result: int = task.Result;
+
+    ValueTask.Wait(task);
+    result: int = task.Result;
+    println(result);
+}
+```
+
+  **Task vs ValueTask&lt;T&gt; summary.**
+
+| Feature | Task | ValueTask&lt;T&gt; |
+| --- | --- | ---
+| Result value | None (void) | Typed result T via .Result |
+| Completion method | Complete() | SetResult(value) |
+| Synchronous factory | None | FromResult&lt;T&gt;(value) |
+| Fire-and-forget | Task.Shoot(task) | Task.Shoot&lt;T&gt;(task) |
+| Awaiter type | Self-awaiter (returns this) | Self-awaiter (returns this) |
+| State values | PENDING, COMPLETED, FAULTED | PENDING, COMPLETED, FAULTED |

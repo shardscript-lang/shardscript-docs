@@ -1,0 +1,378 @@
+---
+title: Classes
+---
+
+## Summary
+
+  A **class** in ShardScript is a reference type that groups fields,
+  properties, methods, constructors, operators, and indexers under a single named
+  type. Classes are allocated on the managed heap, support explicit access
+  modifiers, and can implement one or more interfaces.
+
+## Syntax
+
+  A class is declared at namespace scope with optional modifiers, an identifier,
+  optional generic type parameters, optional interface implementations, and a body.
+
+// class_syntax.shard
+```csharp
+// Non-generic class.
+[access] [static] class ClassName : IInterface
+{
+    // fields, properties, methods, constructors, operators, indexers
+}
+
+// Generic class.
+[access] [static] class ClassName<T> : IInterface
+{
+    // members may use T
+}
+```
+
+| Modifier | Applies to | Meaning |
+| --- | --- | ---
+| `public` | class, member | Accessible from any code that can see the containing namespace. |
+| `private` | member | Accessible only inside the declaring class. |
+| `protected` | member | Accessible inside the declaring class and derived types (reserved for future inheritance support). |
+| `internal` | class, member | Accessible only within the same compilation unit or assembly boundary (reserved for multi-module builds). |
+| `export` | class, member | Makes the symbol visible across shard boundaries when used in native/host bindings. |
+| `static` | class, member | Declares a class or member that belongs to the type itself rather than to any instance. |
+| `async` | method | Marks a method as asynchronously lowerable to a state machine. |
+| `extern` | method | Declares a method whose implementation is supplied by the host runtime. |
+
+<Warning title="Class inheritance is not yet implemented">
+ShardScript classes can only implement **interfaces** after the
+  colon. Extending another class, virtual dispatch, method overriding, and the
+  `base` keyword are planned but not available in the
+  current compiler. Use interface-based abstractions and composition until
+  inheritance lands.
+</Warning>
+
+<Warning title="abstract, sealed, and partial are planned">
+The lexer and parser reserve grammar space for `abstract`,
+  `sealed`, and `partial`, but they
+  are currently commented out of the modifier parser. Writing them today produces
+  a compile error.
+</Warning>
+
+## Parameters / Arguments
+
+  A class declaration accepts the following grammatical elements:
+
+  - **Modifiers** — One or more of  `public`, `private`,  `protected`, `internal`,  `export`, `static`. The parser enforces a fixed order: access, then `static`, then (when implemented) `abstract` /  `sealed` / `partial`.
+  - **Identifier** — The type name. Must be unique within its namespace and may not collide with imported names.
+  - **Type parameters** — Optional generic parameters in angle brackets, e.g. `Container<T>`.
+  - **Base interfaces** — Optional comma-separated list of interfaces after the colon. Every listed interface must be fully implemented by the class.
+  - **Body** — A pair of braces containing member declarations.
+
+## Returns
+
+  A class declaration does not return a value. Evaluating `new ClassName(...)`
+  returns a reference to a newly allocated instance of the class.
+
+## Exceptions / Errors
+
+  - **Duplicate type name** — Declaring two classes, structs, interfaces, or enums with the same fully qualified name in the same scope fails semantic analysis.
+  - **Base type must be an interface**  — Writing `class B : A` where `A`  is a class produces a compile error because class inheritance is not supported.
+  - **Interface not implemented** — A class that claims to implement an interface must provide every method, property, indexer, and accessor declared by that interface with matching signatures.
+  - **Invalid modifier combination**  — `static` cannot be combined with instance members in the same class; static classes cannot declare instance fields, methods, properties, or constructors.
+  - **Instance member in static context**  — Accessing an instance field or method through the type name, or accessing `this` inside a static method, produces a compile error.
+  - **Out-of-order modifiers** —  Modifiers must appear in the order expected by the parser; reordering them reports a modifier-out-of-order error.
+
+## Remarks
+
+  **Reference semantics.** Classes are reference types. Assigning a
+  class variable to another copies the reference, not the object. Mutations made
+  through either reference are visible through the other. Value semantics are
+  provided by `struct`, which is documented separately.
+
+  **Static classes.** A class marked `static`
+  cannot be instantiated and cannot contain instance members. It is useful for
+  utility methods and constants, such as the standard `Math`
+  class. The compiler emits a static-class flag and resolves calls with
+  `CALLSTATICMETHODSYMBOL`.
+
+  **The `this` parameter.** Inside every
+  instance constructor, method, property accessor, indexer accessor, and operator,
+  the compiler injects an implicit `this` parameter whose
+  type is the enclosing class. It is used to access instance state and to
+  disambiguate parameters from fields of the same name.
+
+  **Access modifier resolution.** The compiler distinguishes public
+  and private today. `protected` and
+  `internal` are accepted by the parser and treated
+  permissively in the current semantic model; their exact cross-assembly behavior
+  will tighten once modules and inheritance are fully implemented.
+
+  **Generic classes.** Type parameters can appear in field types,
+  method signatures, property types, and indexer types. Generic methods may also
+  introduce their own type parameters, distinct from the class-level parameters.
+
+<Info>
+Use explicit `public` on every class and member you intend
+  to call from outside its namespace. Unmarked top-level classes and unmarked
+  members are both private by default.
+</Info>
+
+## Examples
+
+  **Basic class with fields, constructor, and method.**
+
+// class_basic.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Counter
+{
+    public Name: string;
+    public Count: int;
+
+    public init(name: string)
+    {
+        this.Name = name;
+        this.Count = 0;
+    }
+
+    public func Increment() -> void
+    {
+        this.Count = this.Count + 1;
+        println(this.Name + ": " + this.Count);
+    }
+}
+
+public static func Main() -> void
+{
+    c: Counter = new Counter("clicks");
+    c.Increment();   // clicks: 1
+    c.Increment();   // clicks: 2
+}
+```
+
+  **Access modifiers: public and private.**
+
+// class_access_modifiers.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Person
+{
+    public Name: string;      // accessible from anywhere
+    private Age: int;         // accessible only within Person
+
+    public init(name: string, age: int)
+    {
+        this.Name = name;
+        this.Age = age;
+    }
+
+    public func Birthday() -> void
+    {
+        // Private state can be mutated by instance methods of the same class.
+        this.Age = this.Age + 1;
+    }
+
+    public func Describe() -> string
+    {
+        return this.Name + " is " + this.Age;
+    }
+}
+
+public static func Main() -> void
+{
+    p: Person = new Person("Alice", 30);
+    println(p.Name);            // Alice
+    println(p.Describe());      // Alice is 30
+    p.Birthday();
+    println(p.Describe());      // Alice is 31
+    // p.Age = 31;              // ERROR: Age is private
+}
+```
+
+  **Static members and static classes.**
+
+// class_static.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static class Config
+{
+    public static AppName: string = "MyApp";
+    public static Version: double = 1.0;
+
+    public static func PrintInfo() -> void
+    {
+        println(Config.AppName + " v" + Config.Version);
+    }
+}
+
+public class Session
+{
+    public InstanceId: int;
+
+    public init(id: int)
+    {
+        this.InstanceId = id;
+    }
+
+    public func Describe() -> void
+    {
+        // Static fields are reached through the type name even from instances.
+        println("Instance " + this.InstanceId + " of " + Config.AppName);
+    }
+}
+
+public static func Main() -> void
+{
+    println(Config.AppName);    // MyApp
+    Config.PrintInfo();         // MyApp v1
+
+    s: Session = new Session(42);
+    s.Describe();               // Instance 42 of MyApp
+}
+```
+
+  **Implementing an interface.** Classes support interface
+  implementation, not class inheritance.
+
+// class_interface.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public interface IShape
+{
+    func Area() -> double;
+}
+
+public class Rectangle : IShape
+{
+    public Width: double;
+    public Height: double;
+
+    public init(w: double, h: double)
+    {
+        this.Width = w;
+        this.Height = h;
+    }
+
+    public func Area() -> double
+    {
+        return this.Width * this.Height;
+    }
+}
+
+public static func Main() -> void
+{
+    shape: IShape = new Rectangle(5.0, 4.0);
+    println(shape.Area());      // 20
+}
+```
+
+  **Generic class.**
+
+// class_generic.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Container<T>
+{
+    public Value: T;
+
+    public func Set(v: T) -> void
+    {
+        this.Value = v;
+    }
+
+    public func Get() -> T
+    {
+        return this.Value;
+    }
+
+    public static func Create<U>(v: U) -> Container<U>
+    {
+        c: Container<U> = new Container<U>();
+        c.Value = v;
+        return c;
+    }
+}
+
+public static func Main() -> void
+{
+    c: Container<int> = new Container<int>();
+    c.Set(42);
+    println(c.Get());           // 42
+
+    d: Container<string> = Container<string>.Create<string>("hello");
+    println(d.Get());           // hello
+}
+```
+
+  **Common mistakes and edge cases.**
+
+// class_edge_cases.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Example
+{
+    public Value: int;
+
+    public init(value: int)
+    {
+        // 'this' disambiguates the parameter from the field.
+        this.Value = value;
+    }
+
+    public static func StaticWork() -> void
+    {
+        // Static methods have no 'this'.
+        // println(this.Value);    // ERROR: no 'this' in static context
+    }
+}
+
+public static func Main() -> void
+{
+    a: Example = new Example(10);
+    b: Example = a;            // b references the same object as a
+    b.Value = 20;
+
+    // Because classes are reference types, a.Value has changed too.
+    println(a.Value);          // 20
+    println(b.Value);          // 20
+}
+```
+
+<Warning title="What is not yet available">
+
+    - Class inheritance (`class Derived : Base`) — use interfaces and composition instead.
+    - Method overriding, `virtual`, and  `override` keywords.
+    - The `base` keyword for calling base-class members.
+    - `abstract` classes and methods.
+    - `sealed` classes and methods.
+    - `partial` class definitions.
+
+</Warning>
+
+## See also
+
+  - [`Fields and Properties`](/syntax/object-oriented/fields-and-properties) — instance and static fields, properties, and indexers.
+  - [`Methods`](/syntax/object-oriented/methods) — instance and static methods, access modifiers, and overloading.
+  - [`Constructors and Initialization`](/syntax/object-oriented/constructors) — `init` methods and object creation.
+  - [`Interfaces and Abstractions`](/syntax/object-oriented/interfaces) — contracts that classes can implement.
+
+## Source
+
+  Class declarations are parsed into `ClassDeclarationSyntax` nodes in
+  `ShardScript/ShardScript/src/parsing/SourceParser.cpp`. The syntax node definition is in
+  `ShardScript/ShardScript/include/shard/parsing/nodes/MemberDeclarations/ClassDeclarationSyntax.hpp`.

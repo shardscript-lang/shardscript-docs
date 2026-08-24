@@ -1,0 +1,300 @@
+---
+title: Closures
+---
+
+A **closure** is a lambda expression together with the variables it references from its enclosing scope. In ShardScript, closures are the mechanism that lets a lambda remember the context in which it was created, so it can use that context later, even after the surrounding function has returned.
+
+<Warning title="Implementation status">
+ShardScript currently implements lambdas as first-class delegates, and the parser and binder recognize references to outer variables. However, the runtime does not yet lower those references into heap-promoted capture objects. As a result, a lambda that captures a local variable may not behave correctly if the lambda outlives the stack frame that owns the variable. The semantics described on this page are the intended design; true heap-promoted closures are planned.
+</Warning>
+
+## Introduction
+
+  In ShardScript, functions are values. A `lambda` creates an anonymous function that can be stored in a variable, passed to another function, or returned from a method. When that lambda reads or writes a variable declared outside its own body, the combination of the lambda and the variables it uses is called a closure.
+
+  Closures are powerful because they let a small piece of code carry its own environment. A filter predicate can capture a threshold value, a factory function can capture configuration, and a callback can capture the state it needs to react to an event. But that power comes with lifetime responsibilities: the captured variables must remain valid for as long as the closure can be invoked.
+
+## What it is
+
+  A closure has two parts:
+
+  - **The function body** — the code inside the `lambda` expression.
+  - **The captured environment** — the set of outer variables the lambda references.
+
+  When the compiler sees a lambda reference an outer variable, it is supposed to bind that variable into the lambda's environment. In the intended ShardScript design, captured locals are promoted from the stack to a small heap-allocated capture object (sometimes called a display class) so the lambda can safely use them after the enclosing scope exits.
+
+  Today, the binder resolves outer names through the scope chain, but the emitter emits ordinary `LOAD_VARIABLE` / `STORE_VARIABLE` instructions against the lambda's own frame slots. Until heap promotion is implemented, this means the lambda is reading from its own local-variable array, not from a shared capture object. Non-capturing lambdas and lambdas that only use their parameters are fully supported; capturing lambdas should be treated as a preview of the final design.
+
+## When to use it
+
+  Closures are the right tool when a function needs a small amount of surrounding state and you want to keep that state near the code that uses it.
+
+  - **Callbacks and predicates** — pass a lambda to `Where`, `Select`, or any higher-order API and let it capture the comparison value.
+  - **Factory functions** — return a lambda that is preconfigured with settings from the factory call.
+  - **Event handlers** — capture the object or state the handler needs to update.
+  - **Encapsulation** — hide mutable state behind a narrow functional interface.
+
+  Until capture is fully implemented, prefer passing the needed state as an explicit argument when the lambda must outlive its enclosing scope. This keeps the code correct today and makes the data flow obvious.
+
+## Remarks
+
+## Readonly capture semantics
+
+  The intended ShardScript capture model is **readonly by default**. When a lambda captures a local variable, it receives a read-only view of that variable's value at the point of capture. The lambda can read the captured variable, but it cannot reassign it.
+
+  This rule exists for two reasons. First, it prevents subtle bugs where a callback mutates a variable long after the surrounding code has finished executing. Second, it allows the compiler to share a single captured value across multiple closures without worrying about which one wrote last.
+
+<Warning title="Mutable capture is not yet implemented">
+A syntax for mutable capture (for example, a `capture mut` modifier or similar) has not been finalized. Until it is, treat every captured local as read-only inside the lambda body. Reassigning a captured local will either be rejected by a future compiler version or will require explicit mutable-capture syntax.
+</Warning>
+
+## Lifetime and heap promotion
+
+  Local variables normally live on the call stack and disappear when their function returns. A closure that escapes that function needs the captured variables to live longer, so the compiler must promote them to the GC heap.
+
+  In the planned implementation, the compiler will:
+
+  - Identify every local variable referenced inside a lambda but declared outside it.
+  - Create a compiler-generated capture class containing those variables as fields.
+  - Allocate an instance of that class on the GC heap.
+  - Rewrite the lambda's variable accesses to read from and write to the capture object.
+  - Store a reference to the capture object inside the delegate so the variables stay alive as long as the delegate does.
+
+  Until this lowering is implemented, captured locals are not promoted to the heap. A lambda that escapes its creating scope will read from stack slots that no longer exist, which produces undefined behavior. Keep closures close to their captures.
+
+## Non-capturing versus capturing lambdas
+
+  A lambda that only uses its parameters and globals is a **non-capturing** lambda. It can be passed anywhere and invoked at any time because it has no dependency on the stack frame that created it. A **capturing** lambda references at least one local variable from an enclosing scope and is therefore tied to that scope's lifetime.
+
+  The safest pattern today is to keep the lambda's lifetime shorter than the lifetime of the variables it captures. Define the lambda, hand it to a local higher-order function, and consume the result before the enclosing scope returns.
+
+## Examples
+
+  **Non-capturing lambda passed to a higher-order function.**
+
+// non_capturing_lambda.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public delegate IntFunc(a: int) -> int;
+
+// A higher-order function that transforms each element.
+static func ApplyEach(items: int[], transform: IntFunc) -> List<int>
+{
+    result: List<int> = new List<int>();
+
+    foreach (item in items)
+    {
+        result.Add(transform(item));
+    }
+
+    return result;
+}
+
+public static func Main() -> void
+{
+    values: int[] = [1, 2, 3, 4];
+
+    // This lambda does not capture any outer locals.
+    doubled: List<int> = ApplyEach(values, lambda (n: int) -> int
+    {
+        return n * 2;
+    });
+
+    foreach (n in doubled)
+    {
+        println(n);
+    }
+}
+```
+
+  **Returning a lambda from a function.**
+
+// returning_lambda.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public delegate IntFunc(a: int) -> int;
+
+// Returns a lambda that captures 'factor'. Safe only after heap promotion is implemented.
+static func MakeMultiplier(factor: int) -> IntFunc
+{
+    return lambda (n: int) -> int
+    {
+        return n * factor;
+    };
+}
+
+public static func Main() -> void
+{
+    triple: IntFunc = MakeMultiplier(3);
+    println(triple(5));   // 15
+}
+```
+
+<Warning title="This example relies on planned capture semantics">
+The lambda above references `factor`, a parameter of the enclosing method. In the intended design it captures `factor` into a heap-allocated closure. Until heap promotion is implemented, this pattern may not behave correctly if the lambda outlives the `MakeMultiplier` frame.
+</Warning>
+
+  **Intended closure with a captured local.**
+
+// capture_local.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public delegate IntFunc(a: int) -> int;
+
+public static func Main() -> void
+{
+    offset: int = 10;
+
+    // Intended: 'offset' is captured into the closure.
+    addOffset: IntFunc = lambda (a: int) -> int
+    {
+        return a + offset;
+    };
+
+    println(addOffset(5));   // intended result: 15
+}
+```
+
+<Warning title="Capture of local variables is planned">
+The compiler recognizes the reference to `offset`, but the runtime currently emits a direct variable load instead of a heap-promoted capture. Treat this as illustrative syntax for the final closure design.
+</Warning>
+
+  **Readonly capture: reading a captured value.**
+
+// readonly_capture.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public delegate Predicate(x: int) -> bool;
+
+static func CountWhere(items: int[], matches: Predicate) -> int
+{
+    count: int = 0;
+
+    foreach (n in items)
+    {
+        if (matches(n))
+        {
+            count = count + 1;
+        }
+    }
+
+    return count;
+}
+
+public static func Main() -> void
+{
+    threshold: int = 5;
+    nums: int[] = [1, 6, 3, 9, 4];
+
+    // Intended: the lambda captures 'threshold' as a read-only value.
+    big: int = CountWhere(nums, lambda (n: int) -> bool
+    {
+        return n > threshold;
+    });
+
+    println(big);   // intended result: 2
+}
+```
+
+<Info title="Captures are read-only">
+The lambda reads `threshold` but does not assign to it. That is the intended capture style. Reassigning a captured local inside the lambda is reserved for a future mutable-capture feature.
+</Info>
+
+  **Common mistake: letting a closure outlive its captures.**
+
+// closure_lifetime.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public delegate VoidFunc() -> void;
+
+// DANGEROUS: returns a lambda that references a local of CreateCallback.
+static func CreateCallback() -> VoidFunc
+{
+    message: string = "hello";
+
+    return lambda () -> void
+    {
+        println(message);
+    };
+}
+
+public static func Main() -> void
+{
+    // Do not do this until heap-promoted closures are implemented.
+    // callback := CreateCallback();
+    // callback();
+
+    // Safe alternative: keep the lambda inside the scope that owns 'message'.
+    message: string = "hello";
+    localCallback: VoidFunc = lambda () -> void
+    {
+        println(message);
+    };
+
+    localCallback();
+}
+```
+
+<Warning title="Escaping closures require heap promotion">
+A lambda returned from `CreateCallback` would reference `message` after `CreateCallback`'s stack frame is gone. That requires heap promotion, which is not yet implemented. Keep capturing closures local to the scope that owns their variables.
+</Warning>
+
+  **Capturing loop variables.**
+
+// capture_loop_variable.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public delegate VoidFunc() -> void;
+
+public static func Main() -> void
+{
+    callbacks: List<VoidFunc> = new List<VoidFunc>();
+
+    // Intended design: each lambda captures its own copy of the loop variable.
+    foreach (i in 0..3)
+    {
+        current: int = i;
+
+        callbacks.Add(lambda () -> void
+        {
+            println(current);
+        });
+    }
+
+    // After heap promotion is implemented, this prints 0, 1, 2.
+    foreach (callback in callbacks)
+    {
+        callback();
+    }
+}
+```
+
+<Warning title="Per-iteration capture is planned">
+The pattern of copying the loop variable into a fresh local (`current`) so each lambda captures its own value is the intended idiom. It is not yet safe to store those lambdas in a collection and invoke them after the loop scope exits.
+</Warning>
+
+## Related articles
+
+  - `Lambda Expressions` — anonymous functions and delegate values.
+  - `Delegates` — named and inline callable value types.
+  - `Functions` — core function declaration and call syntax.

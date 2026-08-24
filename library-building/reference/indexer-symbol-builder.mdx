@@ -1,0 +1,357 @@
+---
+title: IndexatorSymbol Builder
+---
+
+## Summary
+
+  The `IndexatorSymbol` builder registers an indexer member on a ShardScript
+  class, struct, or interface. Indexers let ShardScript code access instances with bracket syntax,
+  such as `buffer[index]` or `grid[row, col]`. The
+  fluent API defines the indexer parameters, getter, setter, and an optional backing field.
+
+## Syntax
+
+  An indexer is created from a `ClassSymbol`,
+  `StructSymbol`, or `InterfaceSymbol` builder.
+
+```cpp
+SymbolBuilder<IndexatorSymbol> indexer = cls.AddIndexer(returnType, linking, accessibility);
+
+indexer.AddParameter(name, type);
+indexer.AddGetter().SetCallback(&getterCallback);
+indexer.AddSetter().SetCallback(&setterCallback);
+
+FieldSymbol* backingField = indexer.AddBackingField().Get();
+```
+
+## Parameters / Arguments
+
+| Method | Parameters | Returns | Description |
+| --- | --- | --- | ---
+| `AddIndexer` | `returnType`, `linking`, `accessibility = ACS_PUBLIC` | `SymbolBuilder<IndexatorSymbol>` | Creates an indexer that returns returnType. Use LINK_INSTANCE when context.Args[0] is this. |
+| `AddParameter` | `name`, `type` | `SymbolBuilder<IndexatorSymbol>&` | Adds an index parameter visible to ShardScript as indexer[key]. |
+| `AddGetter` | `accessibility = ACS_PUBLIC` | `SymbolBuilder<AccessorSymbol>` | Adds a getter accessor for read access. |
+| `AddSetter` | `accessibility = ACS_PUBLIC` | `SymbolBuilder<AccessorSymbol>` | Adds a setter accessor for write access. |
+| `AddBackingField` | `accessibility = ACS_PUBLIC` | `FieldSymbol*` | Creates a compiler-generated field of the indexer return type and returns the field symbol. |
+
+## Returns
+
+  The getter callback returns an `ObjectInstance*` that matches the indexer
+  return type. Use `context.Collector.FromValue` to box primitives,
+  `context.Collector.AllocateArray` for arrays, or return an existing object
+  reference. The setter callback returns `nullptr` because assignment
+  expressions evaluate to void.
+
+## Exceptions / Errors
+
+  - Throwing `std::runtime_error` from a getter or setter is converted into a ShardScript runtime exception. Use it for out-of-bounds access, missing keys, or invalid arguments.
+  - Calling `AsString()`, `AsInteger()`, or any argument accessor on `nullptr` or  `GarbageCollector::NullInstance` crashes the host. Guard reference arguments first.
+  - Registering an indexer without a getter makes reads fail at compile time; registering without a setter makes assignment fail at compile time.
+  - A mismatch between the registered `SymbolLinking` and the call site prevents overload resolution from finding the indexer.
+
+## Remarks
+
+<Info title="Native library shape">
+A ShardScript native library is any shared library (`.dll` on Windows, `.so` on Linux, `.dylib` on macOS) that exports the two C-linkage symbols `ShardLib_GetMetadata` and `ShardLib_EntryPoint`. It can be built from one or many C++ source files, live inside `ShardScript.Framework` or in a completely separate project, and links against the ShardScript runtime shared library using headers from `ShardScript/include`. For the full registration contract, see `native-library-overview.mdx`.
+</Info>
+
+  **Argument layout.** For an instance indexer, `context.Args[0]`
+  is `this`, `context.Args[1]` is the first bracket
+  parameter, and the value being assigned is the last argument for setters. For a static indexer,
+  the first real parameter is `context.Args[0]` and the assigned value is the
+  last argument.
+
+  **Getter and setter symmetry.** An indexer may expose a getter only, a setter only,
+  or both. The parameter list declared on the indexer is shared by both accessors. Call
+  `AddParameter` before registering callbacks so the accessors receive the
+  correct argument layout.
+
+  **Backing fields.**
+  `indexer.AddBackingField().Get()` creates a private field whose type equals
+  the indexer return type. This is convenient for simple scalar storage, but most collection-style
+  indexers store data in a manually declared array or dictionary field using
+  `cls.AddField`. Store the returned `FieldSymbol*` and
+  use `SlotIndex` at runtime to read or write the field.
+
+  **Indexers on interfaces.** Interfaces can declare indexers with
+  `AddIndexer`, `AddParameter`,
+  `AddGetter`, and `AddSetter`. Implementing classes
+  must register an indexer with a matching signature and parameter count.
+
+  **Generic indexers.** The indexer return type and parameter types can be generic type
+  parameters declared with `AddTypeParameter`. At runtime, resolve concrete
+  types through `context.Frame->TypeArguments` in the same order as the
+  parameters were declared.
+
+## Examples
+
+  **Example 1: single-parameter instance indexer.** A `Buffer`
+  class wraps a fixed-size integer array and exposes it through
+  `buffer[index]`.
+
+// indexer-samples.shard.cpp
+```cpp
+#include <ShardScript.hpp>
+
+using namespace shard;
+
+static FieldSymbol* buffer_itemsField = nullptr;
+
+static ObjectInstance* buffer_get_Item(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    std::int64_t index = context.Args[1]->AsInteger();
+
+    ObjectInstance* items = self->GetField(buffer_itemsField->SlotIndex);
+
+    if (index < 0 || static_cast<std::size_t>(index) >= items->GetArrayLength())
+    {
+        throw std::runtime_error("index is out of bounds");
+    }
+
+    return items->GetElement(static_cast<std::size_t>(index));
+}
+
+static ObjectInstance* buffer_set_Item(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    std::int64_t index = context.Args[1]->AsInteger();
+    ObjectInstance* value = context.Args[2];
+
+    ObjectInstance* items = self->GetField(buffer_itemsField->SlotIndex);
+
+    if (index < 0 || static_cast<std::size_t>(index) >= items->GetArrayLength())
+    {
+        throw std::runtime_error("index is out of bounds");
+    }
+
+    items->SetElement(static_cast<std::size_t>(index), value);
+    return nullptr;
+}
+
+static ObjectInstance* buffer_Init(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    std::int64_t capacity = context.Args[1]->AsInteger();
+
+    ObjectInstance* items = context.Collector.AllocateArray(TYPE_INT, static_cast<std::size_t>(capacity));
+    self->SetField(buffer_itemsField->SlotIndex, items);
+
+    return self;
+}
+
+SHARDLIB_GETMETADATA
+{
+    lib.Name = L"shard.samples";
+    lib.Description = L"Indexer examples";
+    lib.Version = L"1.0.0";
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> samples(context, L"samples");
+
+    samples.AddClass(L"Buffer", ACS_PUBLIC, LINK_INSTANCE, [](SymbolBuilder<ClassSymbol> cls)
+    {
+        SymbolFactory factory = cls.GetFactory();
+        buffer_itemsField = cls.AddField(L"_items", factory.Array(TYPE_INT), LINK_INSTANCE, ACS_PRIVATE).Get();
+
+        cls.AddInit()
+            .AddParameter(L"capacity", TYPE_INT)
+            .SetCallback(&buffer_Init);
+
+        SymbolBuilder<IndexatorSymbol> indexer = cls.AddIndexer(TYPE_INT, LINK_INSTANCE, ACS_PUBLIC);
+        indexer.AddParameter(L"index", TYPE_INT);
+        indexer.AddGetter().SetCallback(&buffer_get_Item);
+        indexer.AddSetter().SetCallback(&buffer_set_Item);
+    });
+}
+```
+
+  ShardScript program that uses the `Buffer` indexer.
+
+// demo.shard
+```csharp
+using stdio;
+using samples;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    buffer := new Buffer(4);
+
+    buffer[0] = 10;
+    buffer[1] = 20;
+
+    println(buffer[0]);
+    println(buffer[1]);
+}
+```
+
+  **Example 2: multi-parameter indexer.** A `Grid` class stores a
+  flat array and exposes two-dimensional access through `grid[row, col]`.
+
+// grid-callbacks.cpp
+```cpp
+static FieldSymbol* grid_cellsField = nullptr;
+static FieldSymbol* grid_columnsField = nullptr;
+
+static ObjectInstance* grid_get_Item(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    std::int64_t row = context.Args[1]->AsInteger();
+    std::int64_t col = context.Args[2]->AsInteger();
+
+    ObjectInstance* cells = self->GetField(grid_cellsField->SlotIndex);
+    std::int64_t columns = self->GetField(grid_columnsField->SlotIndex)->AsInteger();
+
+    if (row < 0 || col < 0 || col >= columns)
+    {
+        throw std::runtime_error("index is out of bounds");
+    }
+
+    std::size_t flatIndex = static_cast<std::size_t>(row * columns + col);
+    if (flatIndex >= cells->GetArrayLength())
+    {
+        throw std::runtime_error("index is out of bounds");
+    }
+
+    return cells->GetElement(flatIndex);
+}
+
+static ObjectInstance* grid_set_Item(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    std::int64_t row = context.Args[1]->AsInteger();
+    std::int64_t col = context.Args[2]->AsInteger();
+    ObjectInstance* value = context.Args[3];
+
+    ObjectInstance* cells = self->GetField(grid_cellsField->SlotIndex);
+    std::int64_t columns = self->GetField(grid_columnsField->SlotIndex)->AsInteger();
+
+    if (row < 0 || col < 0 || col >= columns)
+    {
+        throw std::runtime_error("index is out of bounds");
+    }
+
+    std::size_t flatIndex = static_cast<std::size_t>(row * columns + col);
+    if (flatIndex >= cells->GetArrayLength())
+    {
+        throw std::runtime_error("index is out of bounds");
+    }
+
+    cells->SetElement(flatIndex, value);
+    return nullptr;
+}
+
+static ObjectInstance* grid_Init(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    std::int64_t rows = context.Args[1]->AsInteger();
+    std::int64_t columns = context.Args[2]->AsInteger();
+
+    std::size_t cellCount = static_cast<std::size_t>(rows * columns);
+    ObjectInstance* cells = context.Collector.AllocateArray(TYPE_INT, cellCount);
+
+    self->SetField(grid_cellsField->SlotIndex, cells);
+    self->SetField(grid_columnsField->SlotIndex, context.Collector.FromValue(columns));
+
+    return self;
+}
+```
+
+  Register the `Grid` class and its two-parameter indexer.
+
+```cpp
+samples.AddClass(L"Grid", ACS_PUBLIC, LINK_INSTANCE, [](SymbolBuilder<ClassSymbol> cls)
+{
+    SymbolFactory factory = cls.GetFactory();
+
+    grid_cellsField = cls.AddField(L"_cells", factory.Array(TYPE_INT), LINK_INSTANCE, ACS_PRIVATE).Get();
+    grid_columnsField = cls.AddField(L"_columns", TYPE_INT, LINK_INSTANCE, ACS_PRIVATE).Get();
+
+    cls.AddInit()
+        .AddParameter(L"rows", TYPE_INT)
+        .AddParameter(L"columns", TYPE_INT)
+        .SetCallback(&grid_Init);
+
+    SymbolBuilder<IndexatorSymbol> indexer = cls.AddIndexer(TYPE_INT, LINK_INSTANCE, ACS_PUBLIC);
+    indexer.AddParameter(L"row", TYPE_INT);
+    indexer.AddParameter(L"column", TYPE_INT);
+    indexer.AddGetter().SetCallback(&grid_get_Item);
+    indexer.AddSetter().SetCallback(&grid_set_Item);
+});
+```
+
+  ShardScript program that reads and writes the grid.
+
+// grid-demo.shard
+```csharp
+using stdio;
+using samples;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    grid := new Grid(3, 3);
+
+    grid[1, 2] = 99;
+    println(grid[1, 2]);
+}
+```
+
+  **Example 3: backing field.** A simple read-only scalar indexer that stores its default
+  value in a compiler-generated backing field.
+
+```cpp
+static ObjectInstance* scalarIndexer_get(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    std::int64_t key = context.Args[1]->AsInteger();
+
+    // In a real implementation the key would select a real storage cell.
+    // This example returns the backing field regardless of the key.
+    ObjectInstance* value = self->GetField(scalar_backingField->SlotIndex);
+    return value;
+}
+
+static ObjectInstance* scalarIndexer_set(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    ObjectInstance* value = context.Args[2];
+
+    self->SetField(scalar_backingField->SlotIndex, value);
+    return nullptr;
+}
+
+samples.AddClass(L"ScalarStore", ACS_PUBLIC, LINK_INSTANCE, [](SymbolBuilder<ClassSymbol> cls)
+{
+    SymbolBuilder<IndexatorSymbol> indexer = cls.AddIndexer(TYPE_INT, LINK_INSTANCE, ACS_PUBLIC);
+    indexer.AddParameter(L"key", TYPE_INT);
+
+    scalar_backingField = indexer.AddBackingField().Get();
+
+    indexer.AddGetter().SetCallback(&scalarIndexer_get);
+    indexer.AddSetter().SetCallback(&scalarIndexer_set);
+});
+```
+
+<Warning title="Backing field vs manual field">
+`AddBackingField` creates a single field of the indexer return type. For
+  collection-style indexers that store many values, declare a manual array or dictionary field with
+  `cls.AddField` instead, as shown in the `Buffer` and
+  `Grid` examples.
+</Warning>
+
+## See also
+
+  - [`library-building/property-symbol-builder`](/library-building/reference/property-symbol-builder) — property registration.
+  - [`library-building/method-symbol-builder`](/library-building/reference/method-symbol-builder) — method registration.
+  - [`library-building/class-symbol-builder`](/library-building/reference/class-symbol-builder) — class registration.
+
+## Source
+
+  The native side of this API is implemented in `shard/semantic/SymbolBuilder.hpp`.
+  View the source on GitHub: `https://github.com/Rikitav/ShardScript/blob/main/ShardScript/include/shard/semantic/SymbolBuilder.hpp`.

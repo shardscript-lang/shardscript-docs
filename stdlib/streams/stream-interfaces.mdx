@@ -1,0 +1,400 @@
+---
+title: Stream Interfaces
+---
+
+## Summary
+
+  The `shard.streams` library (namespace `io`) defines a
+  three-tier interface hierarchy — `IStream`, `IReadableStream`,
+  and `IWritableStream` — that every byte-oriented stream implementation must
+  satisfy. These contracts let you write polymorphic I/O code that works with `MemoryStream`,
+  `FileStream`, `SocketStream`, or any future backend without
+  depending on a concrete type.
+
+## Syntax
+
+  All stream interfaces live in the `io` namespace. Concrete stream types are
+  declared in their own libraries, but they implement the same `io` interfaces:
+
+// stream_abstractions.shard
+```csharp
+using io;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // A MemoryStream can be viewed through every abstraction.
+    ms := new MemoryStream();
+
+    base: IStream = ms;
+    reader: IReadableStream = ms;
+    writer: IWritableStream = ms;
+
+    // Cleanup is always expressed through the base interface.
+    base.Dispose();
+}
+```
+
+| Interface | Extends | Role |
+| --- | --- | ---
+| `IStream` | `IDisposable` | Base contract. Guarantees deterministic cleanup via Dispose(). |
+| `IReadableStream` | `IStream` | Adds synchronous and asynchronous byte read operations. |
+| `IWritableStream` | `IStream` | Adds synchronous and asynchronous byte write and flush operations. |
+
+## Parameters / Arguments
+
+  **IStream** is the root contract. It contributes the single member inherited from
+  `IDisposable`:
+
+| Member | Parameters | Description |
+| --- | --- | ---
+| `Dispose()` | none | Closes the stream and releases native resources. |
+
+  **IReadableStream** adds byte-oriented read methods. Every overload copies up to
+  `count` bytes from the stream into `buffer` starting at
+  `offset`:
+
+| Member | Parameters | Description |
+| --- | --- | ---
+| `Read(buffer, offset, count)` | `buffer`: byte[], `offset`: int, `count`: int | Reads up to count bytes synchronously. |
+| `ReadAsync(buffer, offset, count)` | `buffer`: byte[], `offset`: int, `count`: int | Asynchronously reads up to count bytes. |
+| `ReadAsync(buffer, offset, count, cancellationToken)` | `buffer`: byte[], `offset`: int, `count`: int, `cancellationToken`: CancellationToken | Asynchronous read with cancellation support. |
+
+  **IWritableStream** adds byte-oriented write and flush methods:
+
+| Member | Parameters | Description |
+| --- | --- | ---
+| `Write(buffer, offset, count)` | `buffer`: byte[], `offset`: int, `count`: int | Writes count bytes from buffer to the stream. |
+| `WriteAsync(buffer, offset, count)` | `buffer`: byte[], `offset`: int, `count`: int | Asynchronously writes count bytes. |
+| `WriteAsync(buffer, offset, count, cancellationToken)` | `buffer`: byte[], `offset`: int, `count`: int, `cancellationToken`: CancellationToken | Asynchronous write with cancellation support. |
+| `Flush()` | none | Forces any buffered data to the underlying device. |
+| `FlushAsync()` | none | Asynchronously flushes buffered data. |
+| `FlushAsync(cancellationToken)` | `cancellationToken`: CancellationToken | Asynchronous flush with cancellation support. |
+
+  **SeekOrigin** is an enum in the `io` namespace. It is used by
+  seekable concrete streams such as `MemoryStream` and `FileStream`:
+
+| Value | Underlying int | Meaning |
+| --- | --- | ---
+| `SeekOrigin.Begin` | 0 | Offset is relative to the start of the stream. |
+| `SeekOrigin.Current` | 1 | Offset is relative to the current position. |
+| `SeekOrigin.End` | 2 | Offset is relative to the end of the stream. |
+
+## Returns
+
+| Member | Return Type | Meaning |
+| --- | --- | ---
+| `Read(buffer, offset, count)` | `int` | Number of bytes actually read. Zero means end-of-stream. |
+| `ReadAsync(...)` | `ValueTask<int>` | Awaitable number of bytes read. |
+| `Write(buffer, offset, count)` | `void` | Writes exactly count bytes or throws. |
+| `WriteAsync(...)` | `Task` | Awaitable completion of the write operation. |
+| `Flush() / FlushAsync(...)` | `void` / `Task` | Ensures buffered data reaches the backing store. |
+| `Dispose()` | `void` | Releases the stream and underlying resources. |
+| `Seek(offset, origin)` | `int` | The new position after seeking. |
+
+## Exceptions / Errors
+
+  - **Cannot access a closed stream** — Calling `Read`, `Write`, or `Seek` after `Dispose()` or `Close()` throws a runtime exception.
+  - **Offset and count must be non-negative** — Both `Read` and `Write` reject negative offsets or counts.
+  - **Buffer bounds violation** — If `offset + count`  exceeds `buffer.Length`, the operation throws rather than silently corrupt memory.
+  - **Cannot write to a non-writable stream** — A stream created from a read-only byte array (for example, `new MemoryStream(buffer)`) rejects writes.
+  - **Cannot seek before the beginning** — `Seek`  throws when the resulting position is negative.
+  - **Invalid seek origin** — Passing a value other than  `Begin`, `Current`, or `End` throws.
+  - **Operation canceled** — The cancellation-aware async overloads return a faulted task when the `CancellationToken` is already canceled.
+
+## Remarks
+
+  **Position and Length are not interface members.** The contracts above intentionally say
+  nothing about random access. `Position`, `Length`, and
+  `Seek` are provided by seekable concrete types such as
+  `MemoryStream` and `FileStream`. Network-backed streams such as
+  `SocketStream` do not support seeking; code that needs random access should accept the
+  concrete type or test capabilities before calling `Seek`.
+
+  **Read returns zero at end-of-stream.** A `Read` call may return fewer
+  bytes than requested even before EOF (for example, when reading from a socket with a partial packet). The only
+  reliable EOF signal is a return value of `0`. Loops that need an exact byte count should
+  call `Read` repeatedly until the buffer is filled or EOF is reached.
+
+  **Write is all-or-nothing for MemoryStream.** In-memory writes always copy the full requested
+  count, growing the internal buffer as needed. Device-backed streams may buffer internally; call
+  `Flush` or dispose the stream to ensure data is persisted.
+
+  **Dispose is idempotent.** Calling `Dispose()` more than once is safe.
+  Disposing a stream through an `IStream`-typed reference also satisfies any wrapper such as
+  `StreamReader` or `BinaryReader` that holds the same instance.
+
+  **Async overloads are thin wrappers for in-memory streams.**
+  `MemoryStream.ReadAsync` and `WriteAsync` complete synchronously
+  on the caller's thread and return an already-completed `ValueTask` or
+  `Task`. Device-backed streams (file, socket) schedule real asynchronous I/O on the libuv
+  event loop and resume the awaiter when the operation completes.
+
+<Info>
+Prefer interface-typed parameters when writing reusable helpers. A function that accepts
+  `IReadableStream` works equally well with files, memory buffers, and sockets without
+  introducing coupling to any specific library.
+</Info>
+
+<Warning title="SocketStream is not seekable">
+`SocketStream` implements `IReadableStream` and
+  `IWritableStream`, but it has no `Position`,
+  `Length`, or `Seek` members. Do not write generic code that assumes
+  every stream is seekable.
+</Warning>
+
+## Examples
+
+  **Assigning a concrete stream to each abstraction.**
+
+// stream_assignments.shard
+```csharp
+using stdio;
+using io;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // MemoryStream implements all three interfaces plus IDisposable.
+    ms := new MemoryStream();
+
+    disposable: IDisposable = ms;
+    base: IStream = ms;
+    reader: IReadableStream = ms;
+    writer: IWritableStream = ms;
+
+    // Write through the writable interface.
+    payload: byte[] = [65 as byte, 66 as byte, 67 as byte];
+    writer.Write(payload, 0, 3);
+
+    // Dispose through the base interface closes the stream.
+    base.Dispose();
+
+    println("assigned and disposed ok");
+}
+```
+
+  **Reading until end-of-stream with a reusable helper.**
+
+// stream_read_all.shard
+```csharp
+using stdio;
+using io;
+
+namespace demo;
+
+// A helper that works for any readable stream, not just MemoryStream.
+public static func ReadAll(source: IReadableStream) -> byte[]
+{
+    accumulator := new MemoryStream();
+    chunk: byte[] = [0 as byte; 256];
+
+    while (true)
+    {
+        read: int = source.Read(chunk, 0, 256);
+        if (read == 0)
+        {
+            // EOF reached; no more bytes available.
+            break;
+        }
+
+        accumulator.Write(chunk, 0, read);
+    }
+
+    return accumulator.ToArray();
+}
+
+public static func Main() -> void
+{
+    ms := new MemoryStream();
+    ms.Write([72 as byte, 101 as byte, 108 as byte, 108 as byte, 111 as byte], 0, 5);
+
+    // Rewind to the beginning before reading.
+    ms.Position = 0;
+
+    all: byte[] = ReadAll(ms);
+    println(all.Length);   // 5
+
+    ms.Dispose();
+}
+```
+
+  **Seeking with SeekOrigin.**
+
+// stream_seek.shard
+```csharp
+using stdio;
+using io;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    ms := new MemoryStream();
+    ms.Write([10 as byte, 20 as byte, 30 as byte, 40 as byte], 0, 4);
+
+    // Seek from the beginning to index 2.
+    ms.Seek(2, SeekOrigin.Begin);
+    println(ms.Position);   // 2
+
+    // Overwrite the byte at index 2.
+    ms.Write([99 as byte], 0, 1);
+
+    // Seek two bytes backward from the current position.
+    ms.Seek(-2, SeekOrigin.Current);
+    println(ms.Position);   // 1
+
+    // Seek one byte backward from the end.
+    ms.Seek(-1, SeekOrigin.End);
+    println(ms.Position);   // 3
+
+    ms.Dispose();
+}
+```
+
+  **Asynchronous read and write.**
+
+// stream_async_copy.shard
+```csharp
+using stdio;
+using io;
+using async;
+
+namespace demo;
+
+public static async func CopyAsync(source: IReadableStream, target: IWritableStream) -> Task
+{
+    buffer: byte[] = [0 as byte; 1024];
+
+    while (true)
+    {
+        read: int = await source.ReadAsync(buffer, 0, 1024);
+        if (read == 0)
+        {
+            // End of input; flush any remaining buffered output.
+            break;
+        }
+
+        await target.WriteAsync(buffer, 0, read);
+    }
+
+    await target.FlushAsync();
+}
+
+public static func Main() -> void
+{
+    src := new MemoryStream();
+    src.Write([1 as byte, 2 as byte, 3 as byte], 0, 3);
+    src.Position = 0;
+
+    dst := new MemoryStream();
+
+    task := CopyAsync(src, dst);
+    Task.Wait(task);
+
+    dst.Position = 0;
+    result: byte[] = [0 as byte; 3];
+    dst.Read(result, 0, 3);
+    println(result[0]);   // 1
+    println(result[1]);   // 2
+    println(result[2]);   // 3
+
+    src.Dispose();
+    dst.Dispose();
+}
+```
+
+  **Cancellation-aware async operation.**
+
+// stream_cancellation.shard
+```csharp
+using stdio;
+using io;
+using async;
+
+namespace demo;
+
+public static async func ReadWithTimeout(source: IReadableStream, buffer: byte[]) -> Task
+{
+    cts := new CancellationTokenSource();
+    cts.CancelAfter(10);   // cancel after 10 milliseconds
+
+    try
+    {
+        // The cancellation-aware overload checks the token before scheduling I/O.
+        read: int = await source.ReadAsync(buffer, 0, buffer.Length, cts.Token);
+        println("read " + read + " bytes");
+    }
+    catch (ex: RuntimeException)
+    {
+        println("canceled or failed: " + ex.Message);
+    }
+
+    cts.Dispose();
+}
+
+public static func Main() -> void
+{
+    ms := new MemoryStream();
+    ms.Write([1 as byte, 2 as byte, 3 as byte], 0, 3);
+    ms.Position = 0;
+
+    buffer: byte[] = [0 as byte; 256];
+    Task.Wait(ReadWithTimeout(ms, buffer));
+
+    ms.Dispose();
+}
+```
+
+  **Common mistake: reading without checking the returned count.**
+
+// stream_read_count.shard
+```csharp
+using stdio;
+using io;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    ms := new MemoryStream();
+    ms.Write([65 as byte, 66 as byte], 0, 2);
+    ms.Position = 0;
+
+    buffer: byte[] = [0 as byte; 10];
+
+    // WRONG: assumes Read fills the entire buffer.
+    // ms.Read(buffer, 0, 10);
+    // println(buffer[2]);   // undefined content
+
+    // CORRECT: use the returned count.
+    read: int = ms.Read(buffer, 0, 10);
+    println(read);   // 2
+
+    i: int = 0;
+    while (i < read)
+    {
+        println(buffer[i]);
+        i = i + 1;
+    }
+
+    ms.Dispose();
+}
+
+## See also
+
+  - [`MemoryStream`](/stdlib/streams/memory-stream) — seekable in-memory implementation of the stream contracts.
+  - [`BinaryReader &amp; BinaryWriter`](/stdlib/streams/binary-reader-writer) — typed adapters for  `IReadableStream` and `IWritableStream`.
+  - [`StreamReader &amp; StreamWriter`](/stdlib/streams/stream-reader-writer) — text adapters for  `IReadableStream` and `IWritableStream`.
+  - [`TCP Sockets`](/stdlib/socket/tcp-sockets) — network-backed streams that implement the readable/writable interfaces.
+
+## Source
+
+  The `io` stream interfaces are defined and implemented in
+  `ShardScript.Framework/system/streams.shard.cpp`. The
+  `IDisposable` contract is declared alongside other runtime interfaces in the
+  framework registration code.
+
+```

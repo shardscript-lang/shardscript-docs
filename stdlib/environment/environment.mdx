@@ -1,0 +1,286 @@
+---
+title: Environment
+---
+
+## Summary
+
+  The `shard.environment` library exposes a static `Environment`
+  class in the `environment` namespace for reading and writing the current process's
+  operating-system environment variables. Reads return an empty string when a variable is absent, and writes
+  affect only the calling process and any child processes launched afterward.
+
+## Syntax
+
+  Access is provided through a static delimiter operator and two explicit static methods:
+
+| Member | Signature | Access |
+| --- | --- | ---
+| `Environment.NAME` | `Environment.`*name* `:` `string` | Static delimiter operator; name is an identifier passed as a string. |
+| `GetVariable(name)` | `static func GetVariable(name: string) -> string` | Explicit static method for variable names known only at runtime. |
+| `SetVariable(name, value)` | `static func SetVariable(name: string, value: string) -> string` | Explicit static method. The current implementation returns an empty string. |
+
+## Parameters / Arguments
+
+| Parameter | Type | Description |
+| --- | --- | ---
+| `name` | string | The environment variable name. On Windows the lookup is case-insensitive; on Linux it is case-sensitive. |
+| `value` | string | The value to assign. An empty string clears the variable on Windows and sets it to an empty value on Linux. |
+
+## Returns
+
+| Member | Return Type | Description |
+| --- | --- | ---
+| `Environment.NAME` | string | The variable value, or an empty string if the variable does not exist. |
+| `GetVariable(name)` | string | The variable value, or an empty string if the variable does not exist. |
+| `SetVariable(name, value)` | string | The current implementation returns an empty string. |
+
+## Exceptions / Errors
+
+  - **Compile-time name resolution** — The  `environment` namespace must be imported with  `using environment;` before `Environment` can be referenced.
+  - **Argument type mismatch** — Both `name`  and `value` must be `string`. Passing other primitive types or reference types fails semantic analysis.
+  - **Missing variable is not an error** — Reading a non-existent variable returns `""`. It does not throw and does not return  `null`.
+
+## Remarks
+
+  **Process-local mutations.** `SetVariable` updates the environment block
+  of the current process. The change is visible to child processes started after the call, but it does not modify
+  the parent shell, system registry, or any other running process. There is no mechanism to broadcast environment
+  changes to existing processes.
+
+  **Platform differences.** On Windows, environment variable names are case-insensitive and the
+  implementation uses the wide-character APIs `_wgetenv` and
+  `_wputenv_s`. On Linux, names are case-sensitive and the implementation uses
+  `std::getenv` and `setenv`. Always use canonical casing for
+  cross-platform variables such as `PATH`, `HOME`, and
+  `TEMP`.
+
+  **Delimiter operator.** `Environment.NAME` is not a field access; it is a
+  static delimiter-operator overload that passes the identifier `NAME` as a string argument.
+  To read a variable whose name is stored in another string, call `GetVariable(varName)`.
+
+<Info>
+Missing variables return an empty string. Test for absence with `value == ""`, not with a
+  null check.
+</Info>
+
+<Warning title="Not implemented">
+`ExpandEnvironmentVariables` and .NET-style names such as
+  `GetEnvironmentVariable` / `SetEnvironmentVariable` are not exposed
+  by `shard.environment`. Expand variable references manually with
+  `strings.Replace` or read each variable separately.
+</Warning>
+
+## Examples
+
+  **Basic read via the delimiter operator and explicit methods.**
+
+// environment_basic.shard
+```csharp
+using stdio;
+using environment;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Delimiter operator: the identifier is passed as the variable name.
+    user: string = Environment.USERNAME;
+    println(user);
+
+    // Explicit method form is identical in behavior for literal names.
+    path: string = Environment.GetVariable("PATH");
+    println(path);
+
+    home: string = Environment.GetVariable("HOME");
+    println(home);
+}
+```
+
+  **Writing a value and reading it back.**
+
+// environment_write.shard
+```csharp
+using stdio;
+using environment;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    Environment.SetVariable("SHARD_DEMO", "hello from shard");
+
+    value: string = Environment.SHARD_DEMO;
+    println(value);   // hello from shard
+
+    // Clean up so the change does not leak to child processes.
+    Environment.SetVariable("SHARD_DEMO", "");
+}
+```
+
+  **Supplying a default when a variable is missing.**
+
+// environment_default.shard
+```csharp
+using stdio;
+using environment;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    port: string = Environment.PORT;
+
+    if (port == "")
+    {
+        // No override was supplied; use the production-safe default.
+        port = "8080";
+    }
+
+    println(port);
+}
+```
+
+  **Reading a dynamic name with `GetVariable`.**
+
+// environment_dynamic.shard
+```csharp
+using stdio;
+using environment;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // The name is chosen at runtime, so the delimiter operator cannot be used.
+    suffix: string = "STAGE";
+    fullName: string = "APP_" + suffix;
+
+    stage: string = Environment.GetVariable(fullName);
+    if (stage == "")
+    {
+        stage = "development";
+    }
+
+    println(stage);
+}
+```
+
+  **Platform case-sensitivity and cross-portable keys.**
+
+// environment_case.shard
+```csharp
+using stdio;
+using environment;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // On Windows these three resolve to the same variable.
+    // On Linux they are distinct variables.
+    a: string = Environment.PATH;
+    b: string = Environment.Path;
+    c: string = Environment.path;
+
+    println(a);
+    println(b);
+    println(c);
+
+    // Prefer canonical casing for code that runs on both platforms.
+    home: string = Environment.HOME;
+    temp: string = Environment.TEMP;
+    println(home);
+    println(temp);
+}
+```
+
+  **Configuration and secrets pattern.**
+
+// environment_config.shard
+```csharp
+using stdio;
+using environment;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Required secret: fail fast when it is missing.
+    apiKey: string = Environment.API_KEY;
+    if (apiKey == "")
+    {
+        println("ERROR: API_KEY is not set");
+        return;
+    }
+
+    // Optional configuration: use a default when absent.
+    timeoutMs: string = Environment.TIMEOUT_MS;
+    if (timeoutMs == "")
+    {
+        timeoutMs = "5000";
+    }
+
+    // Feature flag: treat any non-empty value as enabled.
+    verbose: bool = Environment.VERBOSE != "";
+
+    // Never log the secret value itself.
+    println("API_KEY is configured");
+    println("timeout: " + timeoutMs);
+    println("verbose: " + verbose);
+}
+```
+
+  **Common mistake: expecting `null` for a missing variable.**
+
+// environment_missing.shard
+```csharp
+using stdio;
+using environment;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // WRONG: Environment never returns null.
+    // if (Environment.MISSING == null) { ... }
+
+    // CORRECT: test for the empty string.
+    value: string = Environment.MISSING;
+    if (value == "")
+    {
+        println("MISSING is not set");
+    }
+}
+```
+
+  **Common mistake: expecting changes to persist outside the process.**
+
+// environment_scope.shard
+```csharp
+using stdio;
+using environment;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // This affects only the current process and future children.
+    Environment.SetVariable("SHARD_TEMP", "/tmp/shard");
+
+    // It does NOT modify the parent shell, the Windows registry, or ~/.profile.
+    // Launch a child process after this point to see the new value.
+    println(Environment.SHARD_TEMP);
+}
+```
+
+## See also
+
+  - [`Process & ProcessStartInfo`](/stdlib/subprocess/process-and-processstartinfo) — launching processes that inherit environment variables.
+  - [`I/O & Lifecycle`](/stdlib/subprocess/subprocess-io-and-lifecycle) — using custom environment variables with child processes.
+
+## Source
+
+  The `shard.environment` implementation ships as part of
+  `ShardScript.Framework`. The native binding for
+  `Environment.GetVariable`, `Environment.SetVariable`, and the
+  static delimiter operator is in `ShardScript.Framework/system/environment.shard.cpp`.

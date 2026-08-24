@@ -1,0 +1,399 @@
+---
+title: Runtime Architecture
+---
+
+ShardScript is a **compiled** scripting language: source text is never interpreted
+  directly. It is transformed, ahead of execution, into a compact bytecode that runs on a custom
+  stack-based virtual machine, with concurrency provided by a single-threaded event loop built on
+  **libuv**. This article traces a program from source to running instruction and
+  explains the three engines behind it: the **compiler**, the
+  **virtual machine**, and the **event loop**.
+
+<Info title="Deep dives">
+This page is an overview. For expanded coverage of each engine, see
+  `Compiler Pipeline`, `Bytecode and OpCodes`,
+  `Virtual Machine Internals`, and `Event Loop and libuv`.
+</Info>
+
+## The Pipeline at a Glance
+
+  Every ShardScript program passes through the same fixed sequence. The
+  `CompilationContext` owns each stage and threads a
+  `SemanticModel` — the resolved symbol and type information — through them.
+  The final product is an `ApplicationDomain`: a ready-to-run bundle handed to
+  the host.
+
+// pipeline.txt
+```text
+Source text
+   |
+   v
+1. Lexer            -- tokens
+2. Parser           -- AST  (SyntaxTree)
+3. Semantic model   -- symbols, scopes, bound types   <-- all errors caught here
+4. Async lowering   -- async methods become state machines
+5. Layout           -- field/slot offsets assigned
+6. Emission         -- per-method bytecode + string pool
+   |
+   v
+ApplicationDomain  =  Program image  +  VirtualMachine  +  EventLoop  +  GarbageCollector
+   |
+   v
+7. VM::Run()        -- executes the entry point
+```
+
+  Stages 1–6 are the compiler; stage 7 is the runtime. Lexical, syntax, and *type* errors are
+  all reported before stage 7 begins — a program that contains them never reaches the VM.
+
+## Lexing, Parsing, and the Semantic Model
+
+  The **lexer** (`LexicalAnalyzer`) turns source text into a
+  stream of tokens in a `LexicalBuffer`, recognising the language&apos;s
+  richer literal forms — hexadecimal, binary, and decimal prefixes (`0x`,
+  `0b`, `0d`), backtick digit separators, and SI-style
+  size suffixes. The **parser** (`SourceParser`) is a hand-written
+  recursive-descent parser that consumes the token stream and builds a
+  `SyntaxTree` of `CompilationUnit` nodes — at this stage
+  purely syntactic structure, with no meaning yet attached.
+
+<h3 className="font-space text-lg font-semibold text-text-primary mb-3 mt-6">The semantic model</h3>
+
+  The semantic analyzer (`Semanter.Analyze`) walks the syntax tree in four
+  ordered passes, each building on the last:
+
+| Pass | Component | Responsibility |
+| --- | --- | ---
+| 1. Declarations | DeclarationCollector | Register every declared type, method, field, and parameter into the SymbolTable. |
+| 2. Type binding | TypeBinder | Resolve type references (generics, base interfaces) to TypeSymbols. |
+| 3. Expression binding | ExpressionBinder | Bind each expression to its symbol and type; resolve overloads and member access. |
+| 4. Validation | SemanticValidator | Enforce the type rules and emit compile-time diagnostics. |
+
+  The output is a fully resolved semantic model: a `SymbolTable` of typed
+  symbols, a scope tree, and the `TypeShapes` that describe each type&apos;s
+  physical layout. Any type error, unknown name, or invalid operation becomes a compile-time
+  diagnostic here and halts compilation.
+
+## Async Lowering
+
+  Before bytecode is emitted, `async` methods are rewritten. Each is turned
+  into a compiler-generated state machine so that `await` can suspend and
+  resume without threads.
+
+<Info title="State machines">
+A dedicated pass (`AsyncStateMachineLowering`) hoists each async method&apos;s
+  locals into fields on a generated class and rebuilds the body as a
+  `MoveNext` method that switches on an integer `State`
+  field. Each `await` becomes a state transition: record the current state,
+  register a continuation, and return.
+</Info>
+
+## Bytecode Emission and the Instruction Set
+
+  `LayoutGenerator` assigns concrete offsets — where each field lives in an
+  instance, and which slot index each local occupies. The emitter (
+  `AbstractEmiter`) then walks the syntax tree again and, for every method,
+  emits a flat `ExecutableByteCode` stream plus a shared string pool. Async
+  state machines get their `MoveNext` bodies emitted by the companion
+  `AsyncEmissionPass`. The assembled
+  `ProgramVirtualImage` — type shapes, per-method bytecode, and the string pool
+  — is wrapped, together with a fresh `VirtualMachine`,
+  `EventLoop`, and `GarbageCollector`, into the
+  `ApplicationDomain`.
+
+  Each opcode is a 16-bit `OpCode` followed by zero or more inline operands:
+  an immediate literal, a local slot index, a jump offset, an index into the string pool, or a
+  reference to a resolved symbol (a `TypeSymbol`,
+  `MethodSymbol`, `FieldSymbol`, or
+  `ConstructorSymbol`). The full set groups naturally:
+
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Constants & locals</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['LOADCONST_INTEGER64', 'LOADCONST_STRING', 'LOAD_VARIABLE', 'STORE_VARIABLE'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Stack control</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['POPSTACK', 'POPSTACK_N', 'CREATE_DUPLICATE', 'NOP', 'HALT'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Arithmetic</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['MATH_ADDITION', 'MATH_MULTIPLICATION', 'MATH_POWER', 'MATH_LEFTSHIFT'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Comparison & logic</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['COMPARE_EQUAL', 'COMPARE_LESS', 'LOGICAL_AND', 'LOGICAL_NOT'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Control flow</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['JUMP', 'JUMP_TRUE', 'JUMP_FALSE', 'RETURN', 'THROW'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Calls</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['CALLMETHODSYMBOL', 'CALLGENERICMETHOD', 'CALLDELEGATE', 'CALLINTERFACE'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Objects & fields</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['NEWOBJECT', 'NEWDELEGATE', 'LOADFIELD', 'STOREFIELD', 'LOADSTATICFIELD'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Arrays & ranges</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['NEWARRAY', 'LOADARRAYELEMENT', 'STOREARRAYELEMENT', 'CREATERANGE'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Types</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['ISINSTANCE', 'CAST', 'CASTINTERFACE', 'CASTPRIMITIVE'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">Exceptions</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['ENTER_TRY', 'LEAVE_TRY', 'RETHROW', 'END_CATCH'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+  <div className="bg-[#252538] border border-[#3A3A50] rounded-card p-4">
+    <p className="text-sm font-medium text-text-primary mb-2">defer</p>
+    <div className="flex flex-wrap gap-1.5">
+      {['DEFER', 'DEFER_BREAK', 'DEFER_DRAIN'].map((op) => (
+        <code key={op} className="text-xs font-jetbrains text-[#7A8AB5] bg-[rgba(100,110,160,0.15)] rounded px-1.5 py-0.5">{op}</code>
+      ))}
+    </div>
+  </div>
+
+## Bytecode in the Wild
+
+  The interpreter&apos;s `-d` (`--decompiled`) flag runs
+  the disassembler (`ProgramDisassembler`) and prints each method&apos;s
+  bytecode with friendly mnemonics. This tiny program:
+
+// if_else.shard
+```csharp
+using stdio;
+
+namespace test;
+
+public class Program
+{
+    public static func Main() -> void
+    {
+        if (false)
+            println("if branch");
+        else
+            println("else branch");
+
+        println("after");
+    }
+}
+```
+
+compiles to:
+
+// disassembly.txt
+```text
+; ============================================================
+;  DISASSEMBLY: test.Program.Main
+; ============================================================
+;  Access:      public static
+;  Return:      Void
+;  Parameters:  ()
+;  Locals:      0
+; ============================================================
+
+; Offset    Opcode      Arguments
+; --------  -----------  -----------------------------------------
+SS_0000:   ldc.bool    false          ; push the condition
+SS_0003:   jmpf        SS_003F        ; if false -> skip the then-branch
+SS_000D:   ldstr       pool[0]        ; "if branch"
+SS_0017:   call        stdio.println
+SS_0021:   jmp         SS_003F        ; else-branch fallthrough
+SS_002B:   ldstr       pool[10]       ; "else branch"
+SS_0035:   call        stdio.println
+SS_003F:   ldstr       pool[20]       ; "after"
+SS_0049:   call        stdio.println
+```
+
+  Read it left to right: a boolean is pushed, `jmpf` conditionally skips to
+  the merge point `SS_003F`, the chosen branch loads a string from the pool
+  and calls `println`, and execution reconverges for the trailing statement.
+  Every ShardScript construct ultimately lowers to sequences like this.
+
+## The Stack Virtual Machine
+
+  Execution is performed by the `VirtualMachine`, a classic stack machine:
+  arithmetic and calls consume their operands from the top of an evaluation stack and push their
+  results back. Locals live in a separate, slot-indexed area, not on the operand stack.
+
+<h3 className="font-space text-lg font-semibold text-text-primary mb-3 mt-6">The dispatch loop</h3>
+
+  Each method owns its bytecode stream. To run a method, the VM creates a decoder over that stream
+  and loops:
+
+```text
+while not end of bytecode stream:
+    opcode <- decode next opcode (and its operands)
+    switch (opcode) -> act on the current frame's eval stack
+```
+
+  This fetch–decode–execute switch lives in the VM&apos;s `ProcessCode`
+  routine — one large `switch` over the `OpCode` enum
+  whose cases are the instruction groups above.
+
+<h3 className="font-space text-lg font-semibold text-text-primary mb-3 mt-6">Frames and the evaluation stack</h3>
+
+Every active method call gets a `CallStackFrame`. A frame holds:
+
+  - **Evaluation stack** — a stack of `ObjectInstance*` values that opcodes push and pop.
+  - **Locals** — a slot-indexed region using the offsets the emitter assigned.
+  - **Type arguments** — in force for generic methods.
+  - **Exception-handler stack** — recording protected (`try`) regions and their dispatch offsets.
+  - **Defer stack** — the deferred expressions registered in this scope.
+  - **Pending-task counter** — keeps the frame alive while async work it started is still outstanding.
+
+  Calls push a new frame and transfer arguments; `RETURN` pops it, leaving the
+  return value (if any) on the caller&apos;s evaluation stack. Operator evaluation shows the
+  discipline: a binary opcode pops two values, asks the built-in primitive math module for the
+  result, and — only when the operands are user-defined types — falls back to invoking the type&apos;s
+  overloaded operator method.
+
+<h3 className="font-space text-lg font-semibold text-text-primary mb-3 mt-6">Garbage collection</h3>
+
+  Values are garbage-collected `ObjectInstance` objects. The collector is
+  **reference-counting with object tracking**: every value carries a reference count the
+  VM updates as it is stored in and removed from slots, fields, and stacks, and the instance is
+  reclaimed when the count reaches zero. A small-integer cache covers the common values −5…256, and
+  every allocation — objects, arrays, strings — flows through the collector, which is what makes
+  hosting safe.
+
+## The libuv Event Loop
+
+  Concurrency is cooperative and single-threaded. A single `EventLoop` — a
+  thin wrapper around a libuv `uv_loop_t` — multiplexes all in-flight
+  asynchronous work: timers, socket and HTTP I/O, and thread-pool offloads. No async operation
+  spawns a dedicated OS thread per task; instead each registers a handle with the loop and a
+  continuation to run on completion.
+
+## Timers, I/O, and Task.Delay
+
+  `Task.Delay` is the canonical example. In the async shard it calls the
+  native helper `AsyncScope::Delay`, which creates a libuv timer, arms it,
+  and registers a completion callback:
+
+// task_delay.cpp
+```cpp
+// Native helper behind Task.Delay(ms)
+uv_timer_t* timer = new uv_timer_t;
+uv_timer_init(loop, timer);
+
+uv_timer_start(timer, [](uv_timer_t* handle) {
+    // ...complete the task, which resumes the suspended awaiter...
+    // ...then close and free the timer handle...
+}, milliseconds, 0);
+```
+
+  When the timer fires, the callback completes the task, which resumes the suspended async method.
+
+## Suspending and Resuming
+
+  An async method does not block its caller; it *suspends* at each
+  `await` and returns control to the loop. Two ways to make progress exist:
+
+  - **Blocking wait** — `Task.Wait`  (the bridge from synchronous `Main`) pumps the loop until the awaited task completes, then reads its result. While the call blocks its caller, the loop underneath keeps draining timers and I/O.
+  - **Fire-and-forget** — calling an async method without awaiting starts it concurrently. The loop keeps it alive as long as needed, and  `Run()` halts any remaining fire-and-forget tasks on shutdown.
+
+  Resumption mirrors suspension. When a libuv callback completes a pending operation, the runtime
+  calls `ResumeContinuation`: it reads the continuation off the task, finds the
+  state machine&apos;s `MoveNext` method, and invokes it — picking up exactly
+  where the method suspended, with its hoisted locals intact. In-flight tasks are
+  **rooted** so the collector cannot reclaim them while they are suspended.
+
+// event_loop.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+async func CounterA() -> Task
+{
+    println("A: 1");
+    await Task.Delay(500);
+    println("A: 2");
+}
+
+async func CounterB() -> Task
+{
+    println("B: 1");
+    await Task.Delay(300);
+    println("B: 2");
+}
+
+public func Main() -> void
+{
+    t1 := CounterA();
+    t2 := CounterB();
+    t1.Wait();          // pumps the loop until CounterA completes
+    t2.Wait();
+    println("done");
+}
+```
+
+<Info title="Offloading CPU-bound work">
+Because everything shares one thread, long CPU-bound work would starve the loop.
+  `RunOnThreadPool` runs heavy work on a background
+  `std::thread` and marshals completion back through a libuv
+  `uv_async_t`, so the resume happens on the single thread where VM state is
+  safe to touch. This is the pattern native shards use for expensive operations.
+</Info>
+
+<Tip title="Putting it together">
+A running program is the product of all three engines: the compiler guarantees that only
+  well-typed code ever runs; the VM executes bytecode with reference-counted memory; and the libuv
+  event loop layers non-blocking concurrency on top — small enough to embed anywhere, strict enough
+  to catch mistakes early, and concurrent enough for real I/O-heavy workloads.
+</Tip>
+
+## Related articles
+
+  - `Compiler Pipeline` — a detailed walkthrough of each compiler stage.
+  - `Bytecode and OpCodes` — the instruction set produced by the compiler.
+  - `Virtual Machine Internals` — how frames, the evaluation stack, and the dispatch loop work.
+  - `Event Loop and libuv` — how async work is scheduled and resumed.
+  - `ShardScript Philosophy` — the design goals behind the compiler, VM, and event loop.
+  - `Hello World` — run your first program on top of this runtime.
+  - `Building from Source` — compile the interpreter, VM, and event loop yourself.
+  - `Exceptions and Error Handling` — how runtime errors move through the VM.

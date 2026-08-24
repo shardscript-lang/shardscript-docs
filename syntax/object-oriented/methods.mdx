@@ -1,0 +1,437 @@
+---
+title: Methods
+---
+
+## Summary
+
+  A **method** is a named block of code declared inside a class, struct, or interface
+  that defines the behaviour of a type. Methods may receive parameters, return values, be overloaded,
+  and be marked as instance, static, generic, asynchronous, or operator implementations.
+
+## Syntax
+
+  A method declaration consists of optional modifiers, the `func` keyword,
+  an identifier, a parenthesized parameter list, an arrow return type, and a braced body.
+
+// method_syntax.shard
+```csharp
+[access] [static|async|extern|export] func Name<T>(parameters) -> ReturnType
+{
+    // body
+}
+```
+
+  The grammar also supports constructor declarations using the `init` keyword
+  instead of `func`. Constructors follow the same parameter and overload rules
+  as ordinary methods, but have no return type annotation.
+
+// constructor_syntax.shard
+```csharp
+[access] init(parameters)
+{
+    // body
+}
+```
+
+| Modifier | Position | Effect |
+| --- | --- | ---
+| `public` | before func/init | Member is visible outside the declaring type. |
+| `private` | before func/init | Member is visible only inside the declaring type (default). |
+| `static` | after access modifier | Method belongs to the type itself; no this reference is passed. |
+| `async` | after access modifier | Method is lowered into a state machine and must return Task or ValueTask&lt;T&gt;. |
+| `extern` | after access modifier | Method body is supplied by a native host callback instead of bytecode. |
+| `export` | after access modifier | Marks the member for external visibility across shard boundaries. |
+
+## Parameters / Arguments
+
+  Parameters are declared positionally with an explicit type annotation. The compiler checks every
+  argument at the call site for type compatibility. Instance methods have an implicit leading
+  parameter named `this` that holds the receiver object.
+
+| Form | Example | Meaning |
+| --- | --- | ---
+| Named typed parameter | `name: string` | A parameter called name of type string. |
+| Multiple parameters | `a: int, b: int` | Two independent parameters. |
+| Generic parameter list | `func Swap<T>(a: T, b: T)` | Type parameter T is bound at call time. |
+| No parameters | `()` | Empty parameter list. |
+
+  Methods are resolved by **signature**: the combination of the declaring type, method
+  name, and parameter types. Return type alone does not distinguish overloads.
+
+## Returns
+
+  Every method must declare a return type after `->`. Use
+  `void` when the method does not produce a value. The compiler verifies that
+  every control path returns a value of the declared type for non-void methods.
+
+| Return Type | Usage |
+| --- | ---
+| `void` | The method performs work but returns nothing. |
+| `int` | Returns a 64-bit signed integer. |
+| `double` | Returns a 64-bit IEEE 754 floating-point value. |
+| `bool` | Returns a Boolean value. |
+| `string` | Returns an immutable Unicode string. |
+| `T` | Returns a value of generic type T. |
+| `Task / ValueTask<T>` | Returned by async methods. |
+
+## Exceptions / Errors
+
+  - **Missing return type** — Every method except  `init` must specify `-> ReturnType`.
+  - **Return type mismatch** — Returning an  `int` from a method declared `-> string` fails semantic analysis.
+  - **Unreachable end of non-void method** — If a non-void method can complete without a `return` statement, the compiler reports an error.
+  - **Ambiguous overload** — Two methods in the same type with the same name and identical parameter lists produce a duplicate-symbol error.
+  - **This in static context** — Using  `this` inside a `static` method is a compile-time error because there is no receiver instance.
+  - **Access violation** — Calling a  `private` method from outside the declaring type fails at compile time.
+
+## Remarks
+
+  **Instance versus static.** An instance method receives the receiver object as the
+  first argument on the new frame's evaluation stack (slot 0). The body accesses it through the
+  `this` keyword. A static method has no implicit receiver, so its first
+  declared parameter occupies slot 0. Static methods are invoked through the type name, while
+  instance methods are invoked through an object reference.
+
+  **Overloading.** Multiple methods may share the same name as long as their parameter
+  lists differ in arity or type. Constructors (`init`) may also be overloaded,
+  which is the primary way to provide several initialization patterns for a class. Overload
+  resolution is performed at compile time and prefers exact type matches.
+
+  **Generic methods.** A method can declare its own type parameters independent of any
+  enclosing type. The type arguments may be specified explicitly at the call site
+  (`obj.Method<int>(value)`) or, in many cases, inferred from the
+  argument types.
+
+  **Operator methods.** Operator overloading is implemented with a static method whose
+  name is an operator symbol. Binary operators take two parameters; unary operators take one. Only
+  a fixed set of operators can be overloaded; see the Operators reference page for the complete
+  table.
+
+  **Async methods.** Marking a method with `async` causes the
+  compiler to rewrite it into a state machine. The method must return `Task`
+  when it produces no value, or `ValueTask<T>` when it produces a value.
+  Inside an async method, `await` yields control until the awaited operation
+  completes.
+
+  **Extern methods.** An `extern` method declares a signature
+  without a body. The implementation is provided by the host runtime through a native callback.
+  Extern methods are used for interop with the standard library shards and with custom native
+  plugins.
+
+<Warning title="Virtual and override not yet implemented">
+ShardScript recognizes the access modifiers `public` and
+  `private`, and reserves the keywords `protected` and
+  `internal` at the lexer level. However, class inheritance with
+  `virtual`, `override`, `abstract`,
+  or `sealed` modifiers is not implemented in the current compiler. Use
+  interfaces for polymorphic dispatch today.
+</Warning>
+
+## Examples
+
+  **Basic instance method.**
+
+// instance_method.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Counter
+{
+    public Count: int;
+
+    public init()
+    {
+        this.Count = 0;
+    }
+
+    public func Step() -> void
+    {
+        this.Count = this.Count + 1;
+    }
+
+    public func GetCount() -> int
+    {
+        return this.Count;
+    }
+}
+
+public static func Main() -> void
+{
+    c: Counter = new Counter();
+
+    c.Step();
+    c.Step();
+    c.Step();
+
+    println(c.GetCount());   // 3
+}
+```
+
+  **Static methods and type-level state.**
+
+// static_methods.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class IdGenerator
+{
+    private static NextId: int;
+
+    public static func Generate() -> int
+    {
+        id: int = IdGenerator.NextId;
+        IdGenerator.NextId = IdGenerator.NextId + 1;
+        return id;
+    }
+
+    public static func Reset() -> void
+    {
+        IdGenerator.NextId = 0;
+    }
+}
+
+public static func Main() -> void
+{
+    println(IdGenerator.Generate());   // 0
+    println(IdGenerator.Generate());   // 1
+    println(IdGenerator.Generate());   // 2
+
+    IdGenerator.Reset();
+    println(IdGenerator.Generate());   // 0
+}
+```
+
+  **Method and constructor overloading.**
+
+// overloading.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Point
+{
+    public X: double;
+    public Y: double;
+
+    // Parameterless constructor.
+    public init()
+    {
+        this.X = 0.0;
+        this.Y = 0.0;
+    }
+
+    // Overloaded constructor with coordinates.
+    public init(x: double, y: double)
+    {
+        this.X = x;
+        this.Y = y;
+    }
+
+    public func Move(dx: double, dy: double) -> void
+    {
+        this.X = this.X + dx;
+        this.Y = this.Y + dy;
+    }
+
+    // Overloaded Move that accepts a single offset applied to both axes.
+    public func Move(offset: double) -> void
+    {
+        this.Move(offset, offset);
+    }
+
+    public func ToString() -> string
+    {
+        return "(" + this.X + ", " + this.Y + ")";
+    }
+}
+
+public static func Main() -> void
+{
+    a: Point = new Point();
+    b: Point = new Point(3.0, 4.0);
+
+    a.Move(1.0);
+    b.Move(0.5, -0.5);
+
+    println(a.ToString());   // (1, 1)
+    println(b.ToString());   // (3.5, 3.5)
+}
+```
+
+  **Generic method.**
+
+// generic_method.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Container<T>
+{
+    public Value: T;
+
+    // Wrap a value of a different type in a new container.
+    public func As<U>() -> Container<U>
+    {
+        result: Container<U> = new Container<U>();
+        return result;
+    }
+}
+
+public static func Swap<T>(a: T, b: T) -> T[]
+{
+    pair: T[] = new T[2];
+    pair[0] = b;
+    pair[1] = a;
+    return pair;
+}
+
+public static func Main() -> void
+{
+    c: Container<int> = new Container<int>();
+    c.Value = 7;
+
+    wrapped: Container<string> = c.As<string>();
+    wrapped.Value = "seven";
+    println(wrapped.Value);
+
+    swapped: int[] = Swap<int>(1, 2);
+    println(swapped[0]);   // 2
+    println(swapped[1]);   // 1
+}
+```
+
+  **Operator overloading as a static method.**
+
+// operator_method.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Vector2
+{
+    public X: double;
+    public Y: double;
+
+    public init(x: double, y: double)
+    {
+        this.X = x;
+        this.Y = y;
+    }
+
+    // Binary + adds two Vector2 values component-wise.
+    public static operator +(a: Vector2, b: Vector2) -> Vector2
+    {
+        return new Vector2(a.X + b.X, a.Y + b.Y);
+    }
+
+    // Unary - negates both components.
+    public static operator -(v: Vector2) -> Vector2
+    {
+        return new Vector2(-v.X, -v.Y);
+    }
+}
+
+public static func Main() -> void
+{
+    u: Vector2 = new Vector2(1.0, 2.0);
+    v: Vector2 = new Vector2(3.0, 4.0);
+
+    sum: Vector2 = u + v;
+    neg: Vector2 = -sum;
+
+    println("sum: " + sum.X + ", " + sum.Y);     // sum: 4, 6
+    println("neg: " + neg.X + ", " + neg.Y);     // neg: -4, -6
+}
+```
+
+  **Async method.**
+
+// async_method.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public class DelayedGreeter
+{
+    public Message: string;
+
+    public init(message: string)
+    {
+        this.Message = message;
+    }
+
+    public async func GreetAfter(ms: int) -> Task
+    {
+        await Task.Delay(ms);
+        println(this.Message);
+    }
+}
+
+public static func Main() -> void
+{
+    greeter: DelayedGreeter = new DelayedGreeter("hello after delay");
+    task: Task = greeter.GreetAfter(50);
+    task.Wait();
+}
+```
+
+  **Access modifiers and common mistakes.**
+
+// access_modifiers.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Vault
+{
+    // Public getter, private backing storage.
+    public func Balance() -> int
+    {
+        return this._balance;
+    }
+
+    public func Deposit(amount: int) -> void
+    {
+        if (amount > 0)
+        {
+            this._balance = this._balance + amount;
+        }
+    }
+
+    private _balance: int;
+}
+
+public static func Main() -> void
+{
+    vault: Vault = new Vault();
+
+    vault.Deposit(100);
+    println(vault.Balance());   // 100
+
+    // vault._balance = 0;      // ERROR: _balance is private
+}
+```
+
+<Info>
+The default accessibility for methods is `private`. Mark methods that form
+  the public API of a type with `public` explicitly.
+</Info>
+
+## See also
+
+  - [`Functions`](/syntax/functional/functions-and-delegates) — core function declaration and call syntax shared by every callable named block.
+  - [`Constructors and Initialization`](/syntax/object-oriented/constructors) — special `init` methods for object creation.
+  - [`Delegates`](/syntax/functional/functions-and-delegates) — callable value types for storing and passing functions.
+
+## Source
+
+  Method declarations are parsed into `MethodDeclarationSyntax` nodes in `ShardScript/ShardScript/src/parsing/SourceParser.cpp`. The syntax node definition is in `ShardScript/ShardScript/include/shard/parsing/nodes/MemberDeclarations/MethodDeclarationSyntax.hpp`.

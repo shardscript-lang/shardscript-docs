@@ -1,0 +1,370 @@
+---
+title: CancellationToken & CancellationTokenSource
+---
+
+## Summary
+
+  The `shard.async` library provides a cooperative cancellation model
+  built around two types in the `async` namespace:
+  `CancellationTokenSource`, which signals cancellation, and
+  `CancellationToken`, which observers poll to detect the signal.
+  Cancellation is voluntary — no thread, fiber, or async operation is forcibly aborted;
+  the consumer decides when and how often to check the token.
+
+## Syntax
+
+  Both types are declared as public classes in the `async` namespace.
+  A token is obtained from a source instance; the source is created with the normal
+  `new` expression.
+
+// cancellation_syntax.shard
+```csharp
+using async;
+
+// Create a source and retrieve its token.
+cts: CancellationTokenSource = new CancellationTokenSource();
+token: CancellationToken = cts.Token;
+
+// Signal cancellation.
+cts.Cancel();
+
+// Query the token.
+flag: bool = token.IsCancellationRequested;
+```
+
+The public surface of the two types is shown below.
+
+| Type | Member | Signature | Description |
+| --- | --- | --- | ---
+| `CancellationTokenSource` | `init()` | `new CancellationTokenSource()` | Creates a new source and a single linked token. |
+| `CancellationTokenSource` | `Cancel()` | `Cancel() -> void` | Sets the internal cancellation flag; linked tokens observe the change. |
+| `CancellationTokenSource` | `Token` | `Token: CancellationToken` | Returns the token managed by this source. |
+| `CancellationToken` | `IsCancellationRequested` | `IsCancellationRequested: bool` | True after the linked source has called Cancel(). |
+| `CancellationToken` | `CanBeCanceled` | `CanBeCanceled: bool` | True when the token is linked to a valid source. |
+
+## Parameters / Arguments
+
+| Method | Parameter | Type | Description |
+| --- | --- | --- | ---
+| `CancellationTokenSource.init` | *none* | *none* | Takes no arguments. |
+| `CancellationTokenSource.Cancel` | *none* | *none* | Takes no arguments. |
+
+  The two token properties are parameterless getters. Async methods that accept cancellation
+  (such as `FileStream.ReadAsync`) take a trailing
+  `CancellationToken` argument.
+
+## Returns
+
+| Member | Return Type | Value |
+| --- | --- | ---
+| `CancellationTokenSource.Token` | `CancellationToken` | The token created during source construction. |
+| `CancellationTokenSource.Cancel()` | `void` | Returns nothing. |
+| `CancellationToken.IsCancellationRequested` | `bool` | True if cancellation has been signaled; otherwise false. |
+| `CancellationToken.CanBeCanceled` | `bool` | True if the token references a source; false if the source field is null. |
+
+## Exceptions / Errors
+
+  - **Null source reference** — A token whose source field is `null` reports `CanBeCanceled = false`  and `IsCancellationRequested = false`. It never throws on its own.
+  - **Operation canceled by I/O** — Async I/O methods such as `FileStream.ReadAsync` throw  `RuntimeException` (or a derived exception type) when the supplied token is already canceled or becomes canceled during the operation.
+  - **Double cancel** — Calling  `Cancel()` more than once is safe; the internal flag is set to 1 and subsequent calls are no-ops.
+
+## Remarks
+
+  **Cooperative design.** Cancellation in ShardScript is purely opt-in. The VM
+  does not preempt running bytecode, and no async state machine is unrolled automatically. A
+  long-running operation must poll `IsCancellationRequested` or rely on an
+  async primitive that performs the poll on its behalf.
+
+  **Source/token relationship.** A `CancellationTokenSource`
+  owns an internal `_canceled` flag (stored as an `int`,
+  0 or 1) and a `_token` field. During construction the source allocates the
+  token and stores a back-reference from the token to the source. Multiple calls to
+  `cts.Token` return the same instance; multiple tokens can reference the
+  same source when the instance is shared by value.
+
+  **Polling cost.** Reading `IsCancellationRequested` traverses
+  `token &rarr; _source &rarr; _canceled`, performs a type check on the
+  source, and compares the integer flag against zero. There is no lock, no allocation, and no
+  system call on the hot path.
+
+  **Integration with async I/O.** The standard streams check the token at operation
+  start and inside the worker callback. Passing an already-canceled token to
+  `ReadAsync` causes the method to complete immediately with an exception
+  rather than performing I/O.
+
+<Warning title="Linked tokens and timeout APIs are not implemented">
+There is currently no `CancellationTokenSource.CreateLinkedTokenSource`,
+  no `CancellationToken.None` static field, and no
+  `CancelAfter(ms)` method. To combine multiple cancellation sources,
+  poll each token manually or forward the single source that owns the token. To cancel after a
+  delay, start a `Task.Delay` and call `Cancel()`
+  from its continuation.
+</Warning>
+
+## Examples
+
+  **Creating a token and signaling cancellation.**
+
+// cancellation_basic.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public class Program
+{
+    public static func Main() -> void
+    {
+        cts: CancellationTokenSource = new CancellationTokenSource();
+        token: CancellationToken = cts.Token;
+
+        // The token starts in the uncanceled state.
+        println(token.IsCancellationRequested);  // false
+        println(token.CanBeCanceled);            // true
+
+        // Signal cancellation through the source.
+        cts.Cancel();
+
+        println(token.IsCancellationRequested);  // true
+    }
+}
+```
+
+  **Cooperative polling inside an async loop.**
+
+// cancellation_poll.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public class Program
+{
+    public static async func PollUntilCanceled(token: CancellationToken) -> Task
+    {
+        iterations: int = 0;
+
+        while (!token.IsCancellationRequested)
+        {
+            iterations = iterations + 1;
+            println("poll " + iterations);
+
+            // Yield control back to the event loop.
+            await Task.Delay(50);
+        }
+
+        println("canceled after " + iterations);
+    }
+
+    public static func Main() -> void
+    {
+        cts: CancellationTokenSource = new CancellationTokenSource();
+        task: Task = PollUntilCanceled(cts.Token);
+
+        // Let the loop run for a few iterations.
+        Task.Wait(Task.Delay(150));
+
+        // Signal cancellation and wait for graceful exit.
+        cts.Cancel();
+        Task.Wait(task);
+
+        println("done");
+    }
+}
+```
+
+<Info>
+The loop exits cleanly because it polls the token on every iteration. If the body performed a
+  blocking native call without checking the token, cancellation would not take effect until the
+  call returned.
+</Info>
+
+  **Sharing one source across multiple tokens.** Because the same source instance is
+  shared, every token derived from it observes the same cancellation signal.
+
+// cancellation_shared.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public class Program
+{
+    public static func Main() -> void
+    {
+        cts: CancellationTokenSource = new CancellationTokenSource();
+        token1: CancellationToken = cts.Token;
+        token2: CancellationToken = cts.Token;
+
+        println(token1.IsCancellationRequested);  // false
+        println(token2.IsCancellationRequested);  // false
+
+        // A single Cancel call affects every linked token.
+        cts.Cancel();
+
+        println(token1.IsCancellationRequested);  // true
+        println(token2.IsCancellationRequested);  // true
+    }
+}
+```
+
+  **Cancelling an async file read.**
+
+// cancellation_file.shard
+```csharp
+using stdio;
+using async;
+using filesystem;
+
+namespace demo;
+
+public class Program
+{
+    public static async func Run() -> Task
+    {
+        path: string = "D:/temp/cancel_demo.bin";
+
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+
+        // Write test content.
+        fsWrite: FileStream = new FileStream(path, FileMode.CreateNew, FileAccess.Write);
+        data: byte[] = [10 as byte, 20 as byte, 30 as byte];
+        fsWrite.Write(data, 0, 3);
+        fsWrite.Dispose();
+
+        // Prepare an already-canceled token.
+        cts: CancellationTokenSource = new CancellationTokenSource();
+        token: CancellationToken = cts.Token;
+        cts.Cancel();
+
+        // The read should detect cancellation immediately.
+        fsRead: FileStream = new FileStream(path, FileMode.Open, FileAccess.Read);
+        buffer: byte[] = [0 as byte, 0 as byte, 0 as byte];
+
+        try
+        {
+            await fsRead.ReadAsync(buffer, 0, 3, token);
+            println("Expected cancellation exception");
+        }
+        catch (ex: RuntimeException)
+        {
+            println("canceled read threw: " + ex.message);
+        }
+
+        fsRead.Dispose();
+        println("file stream cancellation ok");
+    }
+
+    public static func Main() -> void
+    {
+        Task.Wait(Run());
+    }
+}
+```
+
+  **Handling multiple independent tokens manually.** When a method is driven by
+  several sources, poll each token separately because no automatic linking API exists yet.
+
+// cancellation_multi.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public class Program
+{
+    public static async func Work(token1: CancellationToken, token2: CancellationToken) -> Task
+    {
+        while (!token1.IsCancellationRequested && !token2.IsCancellationRequested)
+        {
+            println("working...");
+            await Task.Delay(40);
+        }
+
+        if (token1.IsCancellationRequested)
+        {
+            println("stopped by token1");
+        }
+        else
+        {
+            println("stopped by token2");
+        }
+    }
+
+    public static func Main() -> void
+    {
+        cts1: CancellationTokenSource = new CancellationTokenSource();
+        cts2: CancellationTokenSource = new CancellationTokenSource();
+
+        task: Task = Work(cts1.Token, cts2.Token);
+
+        Task.Wait(Task.Delay(100));
+        cts1.Cancel();
+        Task.Wait(task);
+
+        println("done");
+    }
+}
+```
+
+  **Common mistake: forgetting to poll.** A canceled token has no effect unless the
+  code reads it.
+
+// cancellation_mistake.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public class Program
+{
+    public static async func IgnoresToken(token: CancellationToken) -> Task
+    {
+        iterations: int = 0;
+
+        // BUG: the token is never checked, so Cancel() cannot stop the loop.
+        while (iterations < 3)
+        {
+            iterations = iterations + 1;
+            println("running " + iterations);
+            await Task.Delay(50);
+        }
+    }
+
+    public static func Main() -> void
+    {
+        cts: CancellationTokenSource = new CancellationTokenSource();
+        task: Task = IgnoresToken(cts.Token);
+
+        cts.Cancel();
+        Task.Wait(task);
+
+        println("done");
+    }
+}
+```
+
+<Warning>
+Cancellation is not preemptive. If an operation does not check
+  `IsCancellationRequested`, it continues until it finishes on its own.
+</Warning>
+
+## See also
+
+  - [`TaskCompletionSource<T>`](/stdlib/async/task-completion-source) — manual completion of async operations.
+  - [`Stream Interfaces`](/stdlib/streams/stream-interfaces) — async I/O overloads that accept `CancellationToken`.
+
+## Source
+
+  The `shard.async` cancellation model ships as part of
+  `ShardScript.Framework`. The native binding for
+  `CancellationTokenSource` and `CancellationToken` is in
+  `ShardScript.Framework/system/async.shard.cpp`.

@@ -1,0 +1,313 @@
+---
+title: Process & ProcessStartInfo
+---
+
+## Summary
+
+  The `shard.subprocess` library (namespace `process`)
+  provides the `Process` and `ProcessStartInfo` classes
+  for spawning and controlling external operating-system processes from ShardScript.
+  `ProcessStartInfo` collects launch parameters such as the executable path,
+  arguments, and working directory, while `Process.Start` creates the child
+  process and returns a handle you can wait on, inspect, and dispose.
+
+## Syntax
+
+  The declarations below show the public surface of the two classes. You do not write these
+  definitions yourself; import the library with `using process;`.
+
+// process_surface.shard
+```csharp
+namespace process;
+
+public class ProcessStartInfo
+{
+    public FileName: string;
+    public Arguments: string;
+    public WorkingDirectory: string;
+    public RedirectStandardOutput: bool;
+    public RedirectStandardError: bool;
+    public RedirectStandardInput: bool;
+    public UseShellExecute: bool;
+    public CreateNoWindow: bool;
+    public InheritEnvironment: bool;
+    public EnvironmentVariables: Dictionary<string, string>;
+}
+
+public class Process
+{
+    public static func Start(fileName: string) -> Process;
+    public static func Start(fileName: string, arguments: string) -> Process;
+    public static func Start(startInfo: ProcessStartInfo) -> Process;
+
+    public HasExited: bool { get; }
+    public ExitCode: int { get; }
+    public ProcessId: int { get; }
+
+    public func WaitForExit() -> int;
+    public func WaitForExit(timeoutMilliseconds: int) -> bool;
+    public func Kill() -> void;
+    public func Dispose() -> void;
+}
+```
+
+## Parameters / Arguments
+
+  `ProcessStartInfo` is a plain mutable data class. Its constructor sets
+  `InheritEnvironment` to `true` and allocates an empty
+  `Dictionary<string, string>` for environment variables.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | ---
+| `FileName` | string | empty | Required. Path to the executable. A bare name is resolved against PATH when possible. |
+| `Arguments` | string | empty | Command-line arguments passed as a single string. Split on whitespace, respecting single and double quotes. |
+| `WorkingDirectory` | string | empty | Working directory for the child process. If empty, the child inherits the parent working directory. |
+| `RedirectStandardOutput` | bool | false | Must be true to read stdout via Process.ReadToEnd(). |
+| `RedirectStandardError` | bool | false | Must be true to read stderr via Process.ReadErrorToEnd(). |
+| `RedirectStandardInput` | bool | false | Must be true to write to stdin via Process.Write() or Process.WriteLine(). |
+| `UseShellExecute` | bool | false | Not supported. Setting this to true causes Process.Start to throw a RuntimeException. |
+| `CreateNoWindow` | bool | false | If true, prevents a console window from appearing on Windows. No effect on Linux. |
+| `InheritEnvironment` | bool | true | If true, the child inherits the parent environment variables. |
+| `EnvironmentVariables` | Dictionary&lt;string, string&gt; | empty | Custom environment variables. Used only when InheritEnvironment is false; they replace the inherited environment. |
+
+  `Process.Start` has three static overloads. The two-string overloads are
+  convenience wrappers; the `ProcessStartInfo` overload exposes the full
+  configuration surface.
+
+| Overload | Parameter | Type | Description |
+| --- | --- | --- | ---
+| `Start(fileName)` | fileName | string | The executable to launch. |
+| `Start(fileName, arguments)` | fileName | string | The executable to launch. |
+| `Start(fileName, arguments)` | arguments | string | Arguments passed to the executable. |
+| `Start(startInfo)` | startInfo | ProcessStartInfo | A fully populated ProcessStartInfo instance. FileName must be non-empty. |
+
+## Returns
+
+| Member | Return Type | Description |
+| --- | --- | ---
+| `Process.Start(...)` | Process | A handle to the newly created child process. |
+| `WaitForExit()` | int | Blocks until the process exits, then returns its exit code. |
+| `WaitForExit(timeoutMilliseconds)` | bool | true if the process exited within the timeout; false if the deadline passed. |
+| `HasExited` | bool | true when the child process is no longer running. |
+| `ExitCode` | int | The last cached exit code. Updated by WaitForExit and ReadToEnd; -1 after Kill. |
+| `ProcessId` | int | An OS identifier. On Windows this is the process handle value; on Linux it is the child PID. |
+| `Kill()` | void | Forcefully terminates the process. |
+| `Dispose()` | void | Terminates the process if it is still running and releases all OS handles. |
+
+## Exceptions / Errors
+
+  - **Missing file name** — Calling  `Process.Start(startInfo)` when  `startInfo.FileName` is empty throws a  `RuntimeException`.
+  - **UseShellExecute not supported** — Setting  `UseShellExecute = true` causes  `Process.Start` to throw a `RuntimeException`. All processes are created directly through the OS process-creation API.
+  - **Process creation failure** — If the executable cannot be found or the OS rejects the launch, `Process.Start` throws a  `RuntimeException`.
+  - **Invalid handle** — Calling  `WaitForExit`, `Kill`, `ReadToEnd`, or `Write` after the process has been disposed throws a  `RuntimeException`.
+  - **Stream not redirected** — Calling  `ReadToEnd`, `ReadErrorToEnd`, or  `Write` when the matching `RedirectStandard*` flag is false throws a `RuntimeException`.
+  - **Stale ExitCode** — Reading `ExitCode`  before the process exits does not throw, but it returns the cached placeholder value (usually 0, or -1 after `Kill`).
+
+## Remarks
+
+  **Argument splitting.** The `Arguments` string is split into
+  argv entries on whitespace, but text inside single or double quotes is preserved as one argument.
+  For example, `Arguments = "a \"b c\" d"` produces three argv entries:
+  `a`, `b c`, and `d`.
+
+  **Environment variables.** By default `InheritEnvironment` is
+  `true` and the child receives the parent environment. Entries in
+  `EnvironmentVariables` are honored only when
+  `InheritEnvironment` is `false`, in which case they
+  replace the inherited environment entirely. If you need both inherited and custom variables, set
+  `InheritEnvironment = false` and copy the required parent values into the
+  dictionary yourself.
+
+  **Resource cleanup.** `Process` implements
+  `IDisposable`. Always use
+  `defer p: Process = Process.Start(...)` so that
+  `Dispose` runs when the variable goes out of scope, even if an exception is
+  thrown. `Dispose` terminates a still-running process and closes all OS
+  handles. Calling `Dispose` more than once is safe.
+
+  **Waiting and exit codes.** The parameterless `WaitForExit()`
+  blocks the calling thread until the child terminates and returns its exit code. The timed overload
+  polls `subprocess_alive` every 10 milliseconds; it returns
+  `false` on timeout and **does not kill** the child. Pass a
+  negative timeout to fall back to indefinite waiting. `ExitCode` is updated by
+  `WaitForExit` and by the blocking read methods; calling
+  `Kill` sets `ExitCode` to -1.
+
+  **Cross-platform implementation.** The library is backed by the
+  `subprocess.h` single-header C library. On Windows it calls
+  `CreateProcessW`; on Linux it uses `posix_spawnp` or
+  `fork` + `execvp`. The examples below use
+  `cmd.exe`, which is Windows-specific; on Linux replace them with
+  `sh -c "..."`.
+
+<Warning>
+`UseShellExecute` is intentionally unsupported. There is no plan to add shell
+  execution through the standard `Process` API. If you need shell features such
+  as redirection or piping, launch `sh` / `cmd.exe`
+  explicitly with the appropriate `Arguments`.
+</Warning>
+
+## Examples
+
+  **Basic spawn with the two-string overload.**
+
+// process_basic.shard
+```csharp
+using stdio;
+using process;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Launch a command and wait for it to finish.
+    defer p: Process = Process.Start("cmd.exe", "/c exit 42");
+
+    code: int = p.WaitForExit();
+
+    println("Has exited: " + p.HasExited);
+    println("Exit code: " + code);
+}
+```
+
+  **Configuring a launch with ProcessStartInfo.**
+
+// process_startinfo.shard
+```csharp
+using stdio;
+using process;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    info: ProcessStartInfo = new ProcessStartInfo();
+    info.FileName = "cmd.exe";
+    info.Arguments = "/c cd";
+    info.WorkingDirectory = "C:\\";
+    info.CreateNoWindow = true;
+    info.RedirectStandardOutput = true;
+
+    defer p: Process = Process.Start(info);
+
+    output: string = p.ReadToEnd();
+    println(output);
+    println("Exit code: " + p.WaitForExit());
+}
+```
+
+  **Timed wait and forced termination.**
+
+// process_timeout.shard
+```csharp
+using stdio;
+using process;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Start a process that takes longer than the timeout.
+    defer p: Process = Process.Start("cmd.exe", "/c ping 127.0.0.1 -n 3 > nul");
+
+    finished: bool = p.WaitForExit(100);
+
+    if (!finished)
+    {
+        println("Process did not finish in time; killing it.");
+        p.Kill();
+    }
+    else
+    {
+        println("Process finished. Exit code: " + p.ExitCode);
+    }
+}
+```
+
+  **Custom environment variables.** Remember to set
+  `InheritEnvironment = false`, otherwise the custom dictionary is ignored.
+
+// process_environment.shard
+```csharp
+using stdio;
+using process;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    info: ProcessStartInfo = new ProcessStartInfo();
+    info.FileName = "cmd.exe";
+    info.Arguments = "/c echo %MY_VAR%";
+    info.InheritEnvironment = false;
+    info.RedirectStandardOutput = true;
+    info.EnvironmentVariables.Add("MY_VAR", "hello from shard");
+
+    defer p: Process = Process.Start(info);
+
+    output: string = p.ReadToEnd();
+    println(output);
+    println("Exit code: " + p.WaitForExit());
+}
+```
+
+  **ExitCode caching and a common mistake.** Reading `ExitCode`
+  before the process has exited returns the cached placeholder, not the real exit code.
+
+// process_exitcode.shard
+```csharp
+using stdio;
+using process;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    defer p: Process = Process.Start("cmd.exe", "/c exit 7");
+
+    // The process has not exited yet, so ExitCode is still the placeholder.
+    println("Before wait: " + p.ExitCode);
+
+    code: int = p.WaitForExit();
+
+    println("After wait:  " + code);
+    println("Has exited:  " + p.HasExited);
+}
+```
+
+  **Argument quoting.** Use double quotes to pass an argument that contains spaces.
+
+// process_quoting.shard
+```csharp
+using stdio;
+using process;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    info: ProcessStartInfo = new ProcessStartInfo();
+    info.FileName = "cmd.exe";
+    info.Arguments = "/c echo \"hello world\"";
+    info.RedirectStandardOutput = true;
+
+    defer p: Process = Process.Start(info);
+
+    println(p.ReadToEnd());
+    println("Exit code: " + p.WaitForExit());
+}
+
+## See also
+
+  - [`I/O &amp; Lifecycle`](/stdlib/subprocess/subprocess-io-and-lifecycle) — redirecting stdin, stdout, stderr and managing process lifetime.
+  - [`Environment`](/stdlib/environment/environment) — reading and writing environment variables inherited by child processes.
+  - [`Console I/O`](/stdlib/constream/console-io) — `stdio` helpers for printing process output.
+
+## Source
+
+  The subprocess implementation ships as part of `ShardScript.Framework`. The native
+  binding for `Process`, `ProcessStartInfo`, and related helpers is
+  in `ShardScript.Framework/system/subprocess.shard.cpp`.
+
+```

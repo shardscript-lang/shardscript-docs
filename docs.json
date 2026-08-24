@@ -1,0 +1,327 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "ShardScript",
+  "colors": {
+    "primary": "#7f0037",
+    "light": "#7f0037",
+    "dark": "#7f0037"
+  },
+  "favicon": "/favicon.ico",
+  "logo": {
+    "light": "/logo/light.png",
+    "dark": "/logo/dark.png"
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Getting Started",
+        "icon": "rocket",
+        "pages": [
+          "index",
+          {
+            "group": "Getting Started",
+            "pages": [
+              "getting-started/philosophy",
+              "getting-started/installation",
+              "getting-started/hello-world",
+              "getting-started/building-from-source",
+              "getting-started/runtime-architecture"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Syntax overview",
+        "icon": "code",
+        "pages": [
+          {
+            "group": "Fundamentals",
+            "pages": [
+              "syntax/fundamentals/variables-and-types",
+              "syntax/fundamentals/type-inference",
+              "syntax/fundamentals/primitive-types",
+              "syntax/fundamentals/operators",
+              "syntax/fundamentals/enums",
+              "syntax/fundamentals/strings-and-interpolation",
+              "syntax/fundamentals/arrays",
+              "syntax/fundamentals/lists-and-dictionaries"
+            ]
+          },
+          {
+            "group": "Control Flow",
+            "pages": [
+              "syntax/control-flow/conditionals",
+              "syntax/control-flow/loops",
+              "syntax/control-flow/switch-expressions",
+              "syntax/control-flow/switch-statements",
+              "syntax/control-flow/exceptions",
+              "syntax/control-flow/deferred-execution"
+            ]
+          },
+          {
+            "group": "Object Oriented",
+            "pages": [
+              "syntax/object-oriented/classes",
+              "syntax/object-oriented/fields-and-properties",
+              "syntax/object-oriented/methods",
+              "syntax/object-oriented/constructors",
+              "syntax/object-oriented/interfaces",
+              "syntax/object-oriented/extension-methods",
+              "syntax/object-oriented/generics",
+              "syntax/object-oriented/generic-constraints",
+              "syntax/object-oriented/operator-overloading",
+              "syntax/object-oriented/self-type"
+            ]
+          },
+          {
+            "group": "Functional",
+            "pages": [
+              "syntax/functional/functions-and-delegates",
+              "syntax/functional/lambda-expressions",
+              "syntax/functional/closures"
+            ]
+          },
+          {
+            "group": "Async",
+            "pages": [
+              "syntax/async/cooperative-multitasking",
+              "syntax/async/async-functions",
+              "syntax/async/await-and-state-machines",
+              "syntax/async/task-and-valuetask",
+              "syntax/async/cancellation-tokens"
+            ]
+          },
+          {
+            "group": "Resource Management",
+            "pages": [
+              "syntax/resource-management/garbage-collection",
+              "syntax/resource-management/object-lifetime"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Standard library",
+        "icon": "book-open",
+        "pages": [
+          {
+            "group": "Console I/O",
+            "pages": [
+              "stdlib/constream/console-io"
+            ]
+          },
+          {
+            "group": "Math",
+            "pages": [
+              "stdlib/math/basic-math",
+              "stdlib/math/random",
+              "stdlib/math/trigonometry-and-logarithms"
+            ]
+          },
+          {
+            "group": "Environment",
+            "pages": [
+              "stdlib/environment/environment"
+            ]
+          },
+          {
+            "group": "Collections",
+            "pages": [
+              "stdlib/collections/ienumerable-and-ienumerator",
+              "stdlib/collections/list",
+              "stdlib/collections/dictionary",
+              "stdlib/collections/queue-and-stack"
+            ]
+          },
+          {
+            "group": "Streams",
+            "pages": [
+              "stdlib/streams/stream-interfaces",
+              "stdlib/streams/memory-stream",
+              "stdlib/streams/stream-reader-writer",
+              "stdlib/streams/binary-reader-writer"
+            ]
+          },
+          {
+            "group": "Filesystem",
+            "pages": [
+              "stdlib/filesystem/file-and-path",
+              "stdlib/filesystem/directory-and-directoryinfo",
+              "stdlib/filesystem/path-concatenation",
+              "stdlib/filesystem/special-directories"
+            ]
+          },
+          {
+            "group": "JSON",
+            "pages": [
+              "stdlib/json/json-serializer",
+              "stdlib/json/json-node"
+            ]
+          },
+          {
+            "group": "Subprocess",
+            "pages": [
+              "stdlib/subprocess/process-and-processstartinfo",
+              "stdlib/subprocess/subprocess-io-and-lifecycle"
+            ]
+          },
+          {
+            "group": "Async",
+            "pages": [
+              "stdlib/async/task-completion-source",
+              "stdlib/async/cancellation-token-and-source"
+            ]
+          },
+          {
+            "group": "Networking",
+            "pages": [
+              "stdlib/http/http-client",
+              "stdlib/http/http-server",
+              "stdlib/socket/tcp-sockets"
+            ]
+          },
+          {
+            "group": "Interop",
+            "pages": [
+              "stdlib/interop/native-interop"
+            ]
+          },
+          {
+            "group": "Reflection",
+            "pages": [
+              "stdlib/reflection/type-introspection"
+            ]
+          },
+          {
+            "group": "Time",
+            "pages": [
+              "stdlib/time/date-and-time"
+            ]
+          },
+          {
+            "group": "Debug",
+            "pages": [
+              "stdlib/debug/developer-tools",
+              "stdlib/debug/vm-inspection"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Library building",
+        "icon": "puzzle-piece",
+        "pages": [
+          {
+            "group": "Concepts",
+            "pages": [
+              "library-building/concepts/native-library-overview",
+              "library-building/concepts/callback-contract-overview",
+              "library-building/concepts/garbage-collection-rules",
+              "library-building/concepts/native-handles-and-object-lifetime",
+              "library-building/concepts/design-best-practices"
+            ]
+          },
+          {
+            "group": "Tutorials",
+            "pages": [
+              "library-building/tutorials/your-first-shard-cpp-library",
+              "library-building/tutorials/example-math-library",
+              "library-building/tutorials/example-generic-collections",
+              "library-building/tutorials/example-async-io",
+              "library-building/tutorials/example-native-handle-wrapper",
+              "library-building/tutorials/example-http-client-server"
+            ]
+          },
+          {
+            "group": "How-To",
+            "pages": [
+              "library-building/how-to/library-build-setup",
+              "library-building/how-to/reading-arguments",
+              "library-building/how-to/returning-values",
+              "library-building/how-to/working-with-objects",
+              "library-building/how-to/working-with-fields",
+              "library-building/how-to/working-with-arrays",
+              "library-building/how-to/throwing-typed-exceptions",
+              "library-building/how-to/generic-types-and-type-parameters",
+              "library-building/how-to/inter-library-dependencies",
+              "library-building/how-to/reflection-style-lookups",
+              "library-building/how-to/async-await-native",
+              "library-building/how-to/troubleshooting"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "library-building/reference/shardlib-entrypoint",
+              "library-building/reference/headers-quick-reference",
+              "library-building/reference/accessibility-and-linking",
+              "library-building/reference/namespace-symbol-builder",
+              "library-building/reference/class-symbol-builder",
+              "library-building/reference/struct-symbol-builder",
+              "library-building/reference/interface-symbol-builder",
+              "library-building/reference/enum-symbol-builder",
+              "library-building/reference/constructor-symbol-builder",
+              "library-building/reference/method-symbol-builder",
+              "library-building/reference/property-symbol-builder",
+              "library-building/reference/indexer-symbol-builder",
+              "library-building/reference/operator-symbol-builder",
+              "library-building/reference/native-callback-helpers",
+              "library-building/reference/async-helpers-reference",
+              "library-building/reference/native-helpers-reference",
+              "library-building/reference/runtime-exception-reference"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Implementation details",
+        "icon": "cpu",
+        "pages": [
+          {
+            "group": "Implementation Details",
+            "pages": [
+              "implementation-details/compiler-pipeline",
+              "implementation-details/bytecode",
+              "implementation-details/virtual-machine",
+              "implementation-details/event-loop"
+            ]
+          }
+        ]
+      }
+    ],
+    "global": {
+      "anchors": [
+        {
+          "anchor": "ShardScript on GitHub",
+          "href": "https://github.com/Rikitav/ShardScript",
+          "icon": "github"
+        }
+      ]
+    }
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/Rikitav/ShardScript"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Get Started",
+      "href": "/getting-started/installation"
+    }
+  },
+  "contextual": {
+    "options": [
+      "copy",
+      "view"
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/Rikitav/ShardScript"
+    }
+  }
+}

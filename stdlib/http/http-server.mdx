@@ -1,0 +1,304 @@
+---
+title: HttpServer
+---
+
+## Summary
+
+  The `shard.http` library exposes the `HttpServer` class in
+  the `net` namespace for creating a native HTTP server. It registers route handlers
+  that receive the request body as a `string` and return the response body as a
+  `string`, then blocks the calling thread while listening for incoming requests.
+
+## Syntax
+
+  `HttpServer` is instantiated with a parameterless constructor. Routes are registered
+  with `Get`, and the server is started with `Listen`.
+  `Dispose` stops the listener and releases native resources.
+
+| Member | Signature | Access |
+| --- | --- | ---
+| `new HttpServer()` | `public HttpServer()` | Instance constructor. Creates a new native HTTP server. |
+| `Get(path, handler)` | `public func Get(path: string, handler: ServerGetCallback) -> void` | Instance method. Registers a handler for GET requests at the specified path. |
+| `Listen(host, port)` | `public func Listen(host: string, port: int) -> void` | Instance method. Binds to host and port, then blocks while processing requests. |
+| `Dispose()` | `public func Dispose() -> void` | Instance method. Implements IDisposable. Stops the server and frees native resources. |
+
+  The `ServerGetCallback` delegate type has the following signature:
+
+// server_callback_signature.shard
+```csharp
+func ServerGetCallback(requestBody: string) -> string
+```
+
+## Parameters / Arguments
+
+| Parameter | Type | Description |
+| --- | --- | ---
+| `path` | string | The route path, for example "/" or "/api/status". The path is passed to the underlying httplib router. |
+| `handler` | ServerGetCallback | A delegate that receives the request body as a string and returns the response body as a string. |
+| `host` | string | The bind address, for example "127.0.0.1" or "0.0.0.0". |
+| `port` | int | The TCP port to listen on, for example 8080. |
+| `requestBody` | string | The body of the incoming HTTP request. For GET requests this is typically empty. |
+
+## Returns
+
+| Member | Return Type | Description |
+| --- | --- | ---
+| `new HttpServer()` | `HttpServer` | A new server instance that implements IDisposable. |
+| `Get(path, handler)` | `void` | No value is returned. |
+| `Listen(host, port)` | `void` | Blocks until the server is stopped. |
+| `Dispose()` | `void` | No value is returned. |
+| `ServerGetCallback` | `string` | The response body to send to the client. |
+
+## Exceptions / Errors
+
+  - **Server is disposed** — Calling  `Get` or `Listen` on a disposed server throws a runtime exception with the message `"HttpServer: Server is disposed."`
+  - **Handler returned null or threw** — If the callback throws an unhandled exception, or if it returns `null`, the server responds with HTTP 500 and the error message as `text/plain; charset=utf-8`.
+  - **Listen failed to bind** — If the host or port is invalid, or if the port is already in use, `Listen` throws a runtime exception from the underlying native HTTP library.
+  - **Namespace not imported** — The `net`  namespace must be imported with `using net;` before  `HttpServer` can be referenced.
+
+## Remarks
+
+  **Single-method routing.** The current `HttpServer` implementation
+  exposes only `Get`. POST, PUT, DELETE, and other HTTP methods are not registered by
+  this class. All registered handlers respond to GET requests and receive only the request body as a
+  `string`; headers, query strings, and the request method are not passed to the
+  callback.
+
+  **Response content type.** The server always serves the handler return value with the content
+  type `text/plain; charset=utf-8` and HTTP status 200. There is no API to set custom
+  headers or status codes from ShardScript.
+
+  **Blocking listen.** `Listen` starts the native listener on a background
+  thread, then pumps the current `ApplicationDomain`'s libuv event loop on the calling
+  thread. The call does not return until the server is stopped, which means the server must be shut down from
+  another thread, signal handler, or by disposing the instance from a callback.
+
+  **VM thread affinity.** Incoming requests are accepted by httplib worker threads and then
+  marshaled onto the domain event loop so that route handlers run on the same VM thread as the rest of the
+  program. This avoids concurrency hazards inside the ShardScript runtime.
+
+  **Disposal.** `HttpServer` implements
+  `IDisposable`. Call `Dispose()` to stop the listener, break the
+  blocking `Listen` call, and release the native server object and event-loop handle.
+  Disposing a server that has already been stopped is safe.
+
+<Info>
+Use `defer server := new HttpServer();` or explicitly call
+  `server.Dispose()` to ensure the native listener is torn down. A server left running
+  will keep the process alive.
+</Info>
+
+<Warning title="Not implemented">
+POST, PUT, DELETE, PATCH, and HEAD route registration are not exposed by
+  `shard.http`. Custom response headers, status codes, and query-string access are also
+  not implemented.
+</Warning>
+
+## Examples
+
+  **Basic server with a single route.**
+
+// httpserver_basic.shard
+```csharp
+using stdio;
+using net;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    server: HttpServer = new HttpServer();
+
+    server.Get("/", lambda(requestBody: string) -> string
+    {
+        return "Hello, ShardScript!";
+    });
+
+    println("Listening on http://127.0.0.1:8080");
+    server.Listen("127.0.0.1", 8080);
+
+    server.Dispose();
+}
+```
+
+  **Echo endpoint that returns the request body.**
+
+// httpserver_echo.shard
+```csharp
+using stdio;
+using net;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    server: HttpServer = new HttpServer();
+
+    server.Get("/echo", lambda(requestBody: string) -> string
+    {
+        if (requestBody == "")
+        {
+            return "(empty body)";
+        }
+
+        return "You sent: " + requestBody;
+    });
+
+    server.Listen("127.0.0.1", 8080);
+    server.Dispose();
+}
+```
+
+  **Using a named handler function instead of a lambda.**
+
+// httpserver_named_handler.shard
+```csharp
+using stdio;
+using net;
+
+namespace demo;
+
+public static func GreetHandler(requestBody: string) -> string
+{
+    if (requestBody == "")
+    {
+        return "Hello, stranger!";
+    }
+
+    return "Hello, " + requestBody + "!";
+}
+
+public static func Main() -> void
+{
+    server: HttpServer = new HttpServer();
+
+    server.Get("/greet", GreetHandler);
+    server.Get("/greet/default", GreetHandler);
+
+    server.Listen("127.0.0.1", 8080);
+    server.Dispose();
+}
+```
+
+  **Registering multiple routes.**
+
+// httpserver_routes.shard
+```csharp
+using stdio;
+using net;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    server: HttpServer = new HttpServer();
+
+    server.Get("/", lambda(requestBody: string) -> string
+    {
+        return "Home page";
+    });
+
+    server.Get("/status", lambda(requestBody: string) -> string
+    {
+        return "OK";
+    });
+
+    server.Get("/api/time", lambda(requestBody: string) -> string
+    {
+        // Returns a plain-text timestamp. Date formatting helpers would be used
+        // here in a real program; this example keeps the response deterministic.
+        return "current time (placeholder)";
+    });
+
+    println("Routes registered; starting server on port 6969");
+    server.Listen("127.0.0.1", 6969);
+    server.Dispose();
+}
+```
+
+  **Using `defer` for automatic disposal.**
+
+// httpserver_defer.shard
+```csharp
+using stdio;
+using net;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    defer server := new HttpServer();
+
+    server.Get("/", lambda(requestBody: string) -> string
+    {
+        println("Received request: " + requestBody);
+        return "Hello World";
+    });
+
+    println("Starting server on localhost:6969");
+    server.Listen("localhost", 6969);
+}
+```
+
+  **Smoke-testing the server with `HttpClient`.**
+
+// httpserver_smoke_test.shard
+```csharp
+using stdio;
+using net;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Start the server in a background context or from another process.
+    // This example assumes a server is already listening on port 8080.
+    client: HttpClient = new HttpClient("http://127.0.0.1:8080");
+
+    response: HttpResponse = client.Get("/");
+    println("Status: " + response.StatusCode);
+    println("Body: " + response.Body);
+
+    client.Dispose();
+}
+```
+
+  **Common mistake: calling `Listen` without a way to stop the server.**
+
+// httpserver_shutdown.shard
+```csharp
+using stdio;
+using net;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    server: HttpServer = new HttpServer();
+
+    server.Get("/", lambda(requestBody: string) -> string
+    {
+        return "hello";
+    });
+
+    // WRONG: Listen blocks forever. There is no shutdown path.
+    // server.Listen("127.0.0.1", 8080);
+
+    // CORRECT: arrange for Dispose to be called later, for example from a
+    // signal handler, another thread, or the defer statement shown above.
+    server.Listen("127.0.0.1", 8080);
+    server.Dispose();
+}
+```
+
+## See also
+
+  - [`HttpClient`](/stdlib/http/http-client) — making HTTP requests against a server.
+  - [`TCP Sockets`](/stdlib/socket/tcp-sockets) — low-level network streams that underlie HTTP traffic.
+
+## Source
+
+  The `shard.http` implementation ships as part of
+  `ShardScript.Framework`. The native binding for `HttpServer`,
+  `HttpClient`, and `HttpResponse` is in
+  `ShardScript.Framework/system/http.shard.cpp`.

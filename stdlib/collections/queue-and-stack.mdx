@@ -1,0 +1,313 @@
+---
+title: Queue and Stack
+---
+
+## Summary
+
+  `Queue<T>` and `Stack<T>` are generic
+  reference types in the `shard.collections` library.
+  `Queue<T>` stores elements in first-in, first-out (FIFO) order;
+  `Stack<T>` stores elements in last-in, first-out (LIFO) order.
+  Both support insertion, removal, inspection, counting, membership testing, and
+  `foreach` enumeration by implementing `IEnumerable<T>`.
+
+## Syntax
+
+  Both types are declared with a single type parameter `T` and are
+  instantiated through the parameterless constructor.
+
+// queue_stack_syntax.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // FIFO queue for pending work items.
+    queue: Queue<int> = new Queue<int>();
+
+    // LIFO stack for undo history.
+    stack: Stack<string> = new Stack<string>();
+
+    println(queue.Count);   // 0
+    println(stack.Count);   // 0
+}
+```
+
+  The public surface of `Queue<T>` is:
+
+| Member | Parameters | Returns | Description |
+| --- | --- | --- | ---
+| `new Queue<T>()` | — | `Queue<T>` | Creates an empty queue with zero initial capacity. |
+| `Count` | — | `int` | Number of elements currently stored. |
+| `Enqueue(item: T)` | `item: T` | `void` | Adds the item to the tail of the queue. |
+| `Dequeue()` | — | `T` | Removes and returns the item at the head of the queue. |
+| `Peek()` | — | `T` | Returns the item at the head without removing it. |
+| `Clear()` | — | `void` | Removes every element and releases the backing storage. |
+| `Contains(item: T)` | `item: T` | `bool` | Searches head-to-tail for an equal element. |
+| `GetEnumerator()` | — | `IEnumerator<T>` | Returns an enumerator used by foreach. |
+
+  The public surface of `Stack<T>` is:
+
+| Member | Parameters | Returns | Description |
+| --- | --- | --- | ---
+| `new Stack<T>()` | — | `Stack<T>` | Creates an empty stack with zero initial capacity. |
+| `Count` | — | `int` | Number of elements currently stored. |
+| `Push(item: T)` | `item: T` | `void` | Adds the item to the top of the stack. |
+| `Pop()` | — | `T` | Removes and returns the item at the top of the stack. |
+| `Peek()` | — | `T` | Returns the top item without removing it. |
+| `Clear()` | — | `void` | Removes every element and releases the backing storage. |
+| `Contains(item: T)` | `item: T` | `bool` | Searches top-to-bottom for an equal element. |
+| `GetEnumerator()` | — | `IEnumerator<T>` | Returns an enumerator used by foreach. |
+
+## Parameters / Arguments
+
+  Methods that accept arguments expect a value whose type matches the collection's type argument
+  `T`. Passing an incompatible type is caught at compile time.
+
+| Method | Parameter | Type | Description |
+| --- | --- | --- | ---
+| `Queue.Enqueue(item)` | `item` | `T` | Value to store at the tail. |
+| `Queue.Contains(item)` | `item` | `T` | Value to compare against each element. |
+| `Stack.Push(item)` | `item` | `T` | Value to store at the top. |
+| `Stack.Contains(item)` | `item` | `T` | Value to compare against each element. |
+
+## Returns
+
+| Member | Return Type | Description |
+| --- | --- | ---
+| `Queue.Count` / `Stack.Count` | `int` | Current number of stored elements. |
+| `Queue.Dequeue()` | `T` | The oldest element, which is removed. |
+| `Queue.Peek()` | `T` | The oldest element, which remains in the queue. |
+| `Stack.Pop()` | `T` | The most recently pushed element, which is removed. |
+| `Stack.Peek()` | `T` | The most recently pushed element, which remains on the stack. |
+| `Queue.Contains(item)` / `Stack.Contains(item)` | `bool` | True when an equal element is found. |
+
+## Exceptions / Errors
+
+  - **Empty queue** — Calling  `Queue.Dequeue()` or `Queue.Peek()` when  `Count == 0` throws a runtime exception with the message "queue is empty".
+  - **Empty stack** — Calling  `Stack.Pop()` or `Stack.Peek()` when  `Count == 0` throws a runtime exception with the message "stack is empty".
+  - **Type mismatch** — Pushing, enqueuing, or searching with a value that is not assignable to `T` fails during semantic analysis.
+  - **Null reference** — Calling an instance method on a  `null` collection reference throws at runtime.
+
+## Remarks
+
+  **Storage and growth.** Both collections are backed by a resizable array.
+  The initial capacity is zero; the first insertion allocates capacity `4`,
+  and the array doubles each time it becomes full. The queue implementation compacts the array
+  and resets `_head` to `0` during growth so that
+  enqueue stays amortized `O(1)`. Removing elements does not shrink the
+  array; call `Clear()` to release storage.
+
+  **Equality in `Contains`.** The collection walks its elements
+  and compares each against the supplied value. Primitives, characters, booleans, and strings are
+  compared by value. For all other reference types, equality is reference identity: two distinct
+  object instances are never equal even if their fields match.
+
+  **Enumeration order.** A queue enumerates from head to tail, matching the order in
+  which elements would be dequeued. A stack enumerates from top to bottom, matching the order in
+  which elements would be popped. Both use lightweight value-type enumerators
+  (`QueueEnumerator<T>` and `StackEnumerator<T>`)
+  that read from the live source collection. Modifying the collection during enumeration is not
+  supported and may skip, repeat, or unexpectedly terminate elements.
+
+<Info>
+`Count` is a read-only property, not a method. Access it with
+  `queue.Count` and `stack.Count` — no parentheses are
+  needed.
+</Info>
+
+<Warning>
+Only the parameterless constructor is available. There is no capacity constructor, no
+  `TrimExcess`, and no `TryDequeue` /
+  `TryPop` helper in the current release.
+</Warning>
+
+## Examples
+
+  **Basic FIFO queue.**
+
+// queue_basic.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    queue: Queue<int> = new Queue<int>();
+
+    queue.Enqueue(10);
+    queue.Enqueue(20);
+    queue.Enqueue(30);
+
+    println(queue.Count);      // 3
+    println(queue.Peek());     // 10
+
+    while (queue.Count > 0)
+    {
+        println(queue.Dequeue()); // 10, 20, 30
+    }
+
+    println(queue.Count);      // 0
+}
+```
+
+  **Basic LIFO stack.**
+
+// stack_basic.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    stack: Stack<int> = new Stack<int>();
+
+    stack.Push(10);
+    stack.Push(20);
+    stack.Push(30);
+
+    println(stack.Count);      // 3
+    println(stack.Peek());     // 30
+
+    while (stack.Count > 0)
+    {
+        println(stack.Pop());  // 30, 20, 10
+    }
+
+    println(stack.Count);      // 0
+}
+```
+
+  **Membership testing with `Contains`.**
+
+// queue_stack_contains.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    stack: Stack<string> = new Stack<string>();
+    stack.Push("shard");
+    stack.Push("script");
+    stack.Push("vm");
+
+    println(stack.Contains("script")); // true
+    println(stack.Contains("csharp")); // false
+
+    queue: Queue<int> = new Queue<int>();
+    queue.Enqueue(5);
+    queue.Enqueue(7);
+    queue.Enqueue(9);
+
+    println(queue.Contains(7));  // true
+    println(queue.Contains(8));  // false
+}
+```
+
+  **Enumeration order.** A queue yields elements in enqueue order; a stack yields
+  elements from the top down.
+
+// queue_stack_enumeration.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    queue: Queue<char> = new Queue<char>();
+    queue.Enqueue('A');
+    queue.Enqueue('B');
+    queue.Enqueue('C');
+
+    print("queue: ");
+    foreach (ch in queue)
+    {
+        print(ch);   // ABC
+    }
+    println("");
+
+    stack: Stack<char> = new Stack<char>();
+    stack.Push('A');
+    stack.Push('B');
+    stack.Push('C');
+
+    print("stack: ");
+    foreach (ch in stack)
+    {
+        print(ch);   // CBA
+    }
+    println("");
+}
+```
+
+  **Edge case: empty collection operations.** Always check `Count`
+  before calling `Pop`, `Dequeue`, or
+  `Peek`, or handle the resulting runtime exception.
+
+// queue_stack_empty.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    queue: Queue<int> = new Queue<int>();
+
+    // Safe: guard before removing.
+    if (queue.Count > 0)
+    {
+        println(queue.Dequeue());
+    }
+    else
+    {
+        println("queue is empty — skipping dequeue");
+    }
+
+    // Alternative: catch the runtime exception.
+    try
+    {
+        queue.Dequeue();
+    }
+    catch (ex: RuntimeException)
+    {
+        println("caught dequeue on empty queue");
+    }
+
+    queue.Enqueue(42);
+    queue.Clear();
+    println(queue.Count); // 0
+}
+```
+
+  **Common mistakes.**
+
+  - **Using `Length` instead of&#123;' '&#125; `Count`.** Queues and stacks expose `Count`; `Length` belongs to arrays and `List<T>`.
+  - **Assuming a stack enumerates in insertion order.**  `foreach` on a `Stack<T>` walks from the top down, which is the same order as repeated `Pop()` calls.
+  - **Modifying while enumerating.** Do not push, pop, enqueue, or dequeue inside the body of a `foreach` over the same collection.
+  - **Calling `Dequeue` or&#123;' '&#125; `Pop` without checking `Count`.** On an empty collection this throws a runtime exception.
+
+## See also
+
+  - [`IEnumerable & IEnumerator`](/stdlib/collections/ienumerable-and-ienumerator) — the iteration contract implemented by queues and stacks.
+  - [`List<T>`](/stdlib/collections/list) — a dynamic array collection with indexed access.
+
+## Source
+
+  The `shard.collections` implementation ships as part of
+  `ShardScript.Framework`. The native binding for `Queue<T>`,
+  `Stack<T>`, and their enumerators is in
+  `ShardScript.Framework/system/collections.shard.cpp`.

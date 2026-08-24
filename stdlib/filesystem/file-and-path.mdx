@@ -1,0 +1,386 @@
+---
+title: File & Path
+---
+
+## Summary
+
+  The `shard.filesystem` namespace exposes two static utility classes:
+  `File` for reading, writing, and manipulating files on disk, and
+  `Path` for parsing and composing file-system paths without touching the disk.
+  All members are `static`; neither class is ever instantiated.
+
+## Syntax
+
+  Both classes are declared with `LINK_STATIC` and live inside the
+  `filesystem` namespace. Reference them through a `using filesystem;`
+  directive.
+
+// file_and_path_intro.shard
+```csharp
+using stdio;
+using filesystem;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // File operations work directly on path strings.
+    File.WriteAllText("demo.txt", "hello, shard");
+
+    // Path operations are pure string transformations.
+    name: string = Path.GetFileName("demo.txt");
+    println(name);
+}
+```
+
+## Parameters / Arguments
+
+## Class File
+
+| Method | Parameters | Returns | Description |
+| --- | --- | --- | ---
+| `ReadAllText(fileName)` | `fileName`: string | string | Opens the file and returns its entire contents as a string. |
+| `ReadAllTextAsync(fileName)` | `fileName`: string | ValueTask&lt;string&gt; | Asynchronously opens the file and returns its entire contents as a string. |
+| `WriteAllText(fileName, content)` | `fileName`: string, `content`: string | void | Creates a new file or overwrites an existing one with the supplied text. |
+| `WriteAllTextAsync(fileName, content)` | `fileName`: string, `content`: string | Task | Asynchronously creates a new file or overwrites an existing one with the supplied text. |
+| `Exists(fileName)` | `fileName`: string | bool | Returns true if the path refers to an existing file-system entry. |
+| `Delete(fileName)` | `fileName`: string | void | Deletes the file if it exists; does nothing if it does not. |
+| `Copy(sourceFileName, destFileName)` | `sourceFileName`: string, `destFileName`: string | void | Copies source to destination, overwriting an existing destination file. |
+| `Move(sourceFileName, destFileName)` | `sourceFileName`: string, `destFileName`: string | void | Moves or renames a regular file from source to destination. |
+
+## Class Path
+
+| Method | Parameters | Returns | Description |
+| --- | --- | --- | ---
+| `Join(paths)` | `paths`: string[] | string | Joins path segments using the platform directory separator. |
+| `GetDirectoryName(path)` | `path`: string | string | Returns the parent directory of the supplied path, or empty if none. |
+| `GetFileName(path)` | `path`: string | string | Returns the final path component including the extension. |
+| `GetExtension(path)` | `path`: string | string | Returns the file extension including the leading dot, or empty if none. |
+| `GetFileNameWithoutExtension(path)` | `path`: string | string | Returns the final component with the extension removed. |
+| `HasExtension(path)` | `path`: string | bool | Returns true if the final component contains a dot. |
+| `ChangeExtension(path, extension)` | `path`: string, `extension`: string | string | Returns a new path with the extension replaced; adds a leading dot if needed. |
+| `GetFullPath(path)` | `path`: string | string | Returns the absolute path resolved against the process working directory. |
+| `GetTempPath()` | (no parameters) | string | Returns the path of the system temporary directory. |
+| `CreateTempFile()` | (no parameters) | string | Creates an empty uniquely-named file in the temp directory and returns its full path. |
+
+## Path Separator Properties
+
+| Property | Type | Description |
+| --- | --- | ---
+| `DirectorySeparatorChar` | string | Primary separator: "\\" on Windows, "/" on Linux. |
+| `AltDirectorySeparatorChar` | string | Alternate separator: "/" on Windows, "\\" on Linux. |
+| `PathSeparator` | string | List separator for PATH-style variables: ";" on Windows, ":" on Linux. |
+
+## Returns
+
+| Member | Return Type | Notes |
+| --- | --- | ---
+| `File.ReadAllText` | string | Content of the file as a wide-character string. |
+| `File.ReadAllTextAsync` | ValueTask&lt;string&gt; | Content of the file as a wide-character string. |
+| `File.WriteAllText` | void | No value; the file is created or overwritten. |
+| `File.WriteAllTextAsync` | Task | No value; the file is created or overwritten. |
+| `File.Exists` | bool | True for any existing file-system entry, including directories. |
+| `File.Delete` | void | Silent when the file is already absent. |
+| `File.Copy` | void | No value; destination is overwritten if it already exists. |
+| `File.Move` | void | No value; source ceases to exist after a successful call. |
+| `Path.Join` | string | Joined path with platform-native separators. |
+| `Path.GetDirectoryName` | string | Parent path string; empty for a bare file name. |
+| `Path.GetFileName` | string | Last component, e.g. "readme.txt". |
+| `Path.GetExtension` | string | Extension with dot, e.g. ".txt"; empty when none. |
+| `Path.GetTempPath` | string | Absolute path to the system temporary directory. |
+| `Path.CreateTempFile` | string | Full path of a newly created, empty temporary file. |
+
+## Exceptions / Errors
+
+  - **Failed to open text file** —  `ReadAllText` or `WriteAllText` throws when the file cannot be opened because of missing permissions, a locked handle, or a non-existent parent directory.
+  - **File writing failed** —  `WriteAllText` throws when the stream reports a failure after writing.
+  - **Failed to delete file** —  `File.Delete` throws when the path exists but cannot be removed.
+  - **Failed to copy file** —  `File.Copy` throws when the source cannot be read or the destination cannot be written.
+  - **Source file does not exist or is not a regular file** —  `File.Move` rejects missing sources or directory sources.
+  - **Destination path cannot be an existing directory** —  `File.Move` refuses to overwrite an existing directory with a file.
+  - **Failed to resolve absolute path** —  `Path.GetFullPath` throws when the runtime cannot normalize the input.
+  - **Failed to create temp file** —  `Path.CreateTempFile` throws when the runtime cannot open the chosen name for writing, usually because of exhausted disk space or missing permissions.
+
+## Remarks
+
+  **Static classes, no instances.** Both `File` and
+  `Path` are static. Calls compile to `CALLSTATICMETHODSYMBOL`
+  and resolve at compile time. There is no `new File()` or
+  `new Path()`.
+
+  **Text encoding.** Synchronous `File` methods use
+  `std::wifstream` and `std::wofstream`. The runtime reads
+  and writes wide-character strings, so ShardScript `string` values round-trip
+  without additional encoding conversions on Windows. The async counterparts use UTF-8 internally via libuv.
+
+  **Exists checks any entry.** `File.Exists` wraps
+  `std::filesystem::exists`, which returns `true` for both
+  files and directories. To distinguish a file from a directory, use `Directory.Exists`
+  or inspect a `FileInfo` instance.
+
+  **Copy always overwrites.** The underlying call passes
+  `fs::copy_options::overwrite_existing`, so an existing destination file is
+  silently replaced. There is currently no overload that preserves an existing destination.
+
+  **Move semantics.** `File.Move` first validates the source as a
+  regular file and the destination as a non-directory, then calls `fs::rename`.
+  On most platforms this is an atomic metadata operation within the same volume; across volumes the
+  behavior depends on the C++ standard library implementation.
+
+  **Path helpers are pure string operations.** `Path` methods construct
+  a `std::filesystem::path`, call the matching C++17 accessor, and return the result
+  as a string. No method verifies that the path exists, is reachable, or is syntactically valid for the
+  current platform beyond what `std::filesystem::path` accepts.
+
+  **Domain-relative resolution.** `Path.GetFullPath` resolves relative
+  paths against the application domain&apos;s current working directory at the time of execution, not against
+  the script file location.
+
+  **Temporary directory resolution.** `Path.GetTempPath` wraps
+  `std::filesystem::temp_directory_path` and returns the platform temp folder as a
+  wide string. The result always ends with a directory separator appropriate for the current operating system.
+
+  **Temporary file creation.** `Path.CreateTempFile` generates a name
+  using the prefix `shard_` followed by 16 random alphanumeric characters and the
+  extension `.tmp`. It retries until it finds a name that does not already exist, then
+  opens that file for writing to reserve it. The method only guarantees uniqueness at the moment of creation;
+  callers are responsible for deleting the file when it is no longer needed.
+
+<Warning title="Path.Combine is not implemented">
+The `Path` class currently provides `Join(paths: string[])`,
+  not a `Combine` overload. Use `Path.Join` with an array
+  literal, or use the `/` operator on strings for two-segment joins.
+</Warning>
+
+## Examples
+
+  **Basic read, write, existence, and cleanup.**
+
+// file_basic.shard
+```csharp
+using stdio;
+using filesystem;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    path: string = "D:/temp/shard_demo.txt";
+
+    // Overwrite the file with new content.
+    File.WriteAllText(path, "hello\\nworld");
+
+    // Read the entire file back into memory.
+    content: string = File.ReadAllText(path);
+    println(content);
+
+    // Verify the file is still on disk.
+    found: bool = File.Exists(path);
+    println(found);
+
+    // Remove the file.
+    File.Delete(path);
+    println(File.Exists(path));
+}
+```
+
+  **Copying and moving files safely.**
+
+// file_copy_move.shard
+```csharp
+using stdio;
+using filesystem;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    source: string = "D:/temp/original.txt";
+    copy: string   = "D:/temp/original_copy.txt";
+    moved: string  = "D:/temp/renamed.txt";
+
+    File.WriteAllText(source, "copy me");
+
+    // Copy overwrites an existing destination file.
+    File.Copy(source, copy);
+    println(File.Exists(copy));
+
+    // Move renames the source file.
+    File.Move(copy, moved);
+    println(File.Exists(moved));
+    println(File.Exists(copy));
+
+    // Clean up both files.
+    File.Delete(source);
+    File.Delete(moved);
+}
+```
+
+  **Extracting path components.**
+
+// path_components.shard
+```csharp
+using stdio;
+using filesystem;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    full: string = "C:/Users/gutii/docs/readme.txt";
+
+    dir: string      = Path.GetDirectoryName(full);
+    file: string     = Path.GetFileName(full);
+    ext: string      = Path.GetExtension(full);
+    stem: string     = Path.GetFileNameWithoutExtension(full);
+    hasExt: bool     = Path.HasExtension(full);
+
+    println(dir);      // C:/Users/gutii/docs
+    println(file);     // readme.txt
+    println(ext);      // .txt
+    println(stem);     // readme
+    println(hasExt);   // true
+}
+```
+
+  **Joining segments and replacing extensions.**
+
+// path_join.shard
+```csharp
+using stdio;
+using filesystem;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Join takes a string array and uses the platform separator.
+    segments: string[] = ["C:/", "Users", "gutii", "file.txt"];
+    joined: string = Path.Join(segments);
+    println(joined);
+
+    // ChangeExtension adds a leading dot automatically.
+    log: string = Path.ChangeExtension("app.log", "txt");
+    println(log);
+
+    // An empty extension removes the existing one.
+    bare: string = Path.ChangeExtension("app.log", "");
+    println(bare);
+
+    // Resolve a relative path against the current working directory.
+    absolute: string = Path.GetFullPath("data/input.txt");
+    println(absolute);
+}
+```
+
+  **Creating and cleaning up temporary files.**
+
+// filesystem_temp.shard
+```csharp
+using stdio;
+using filesystem;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Discover the system temp directory.
+    tmpDir: string = Path.GetTempPath();
+    println("Temp path: " + tmpDir);
+
+    // Reserve a uniquely-named empty file in that directory.
+    tmpFile: string = Path.CreateTempFile();
+    println("Temp file: " + tmpFile);
+
+    // Use the file like any other path.
+    File.WriteAllText(tmpFile, "hello temp");
+    content: string = File.ReadAllText(tmpFile);
+    println("Read back: " + content);
+
+    // Delete the file when it is no longer needed.
+    File.Delete(tmpFile);
+    println("Deleted: " + (File.Exists(tmpFile) == false));
+}
+```
+
+  **Defensive file-writing with existence checks.**
+
+// file_defensive.shard
+```csharp
+using stdio;
+using filesystem;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    target: string = "D:/temp/report.txt";
+
+    // Avoid overwriting an existing report.
+    if (File.Exists(target))
+    {
+        println("report already exists");
+    }
+    else
+    {
+        File.WriteAllText(target, "daily report");
+        println("report created");
+    }
+
+    // Append a new line without reading the whole file.
+    File.AppendAllText(target, "\\nmore data");
+
+    // Verify the append worked.
+    println(File.ReadAllText(target));
+
+    File.Delete(target);
+}
+```
+
+  **Edge cases in path parsing.**
+
+// path_edge_cases.shard
+```csharp
+using stdio;
+using filesystem;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // A bare file name has no parent directory.
+    println(Path.GetDirectoryName("readme.txt"));   // (empty)
+
+    // A trailing separator is preserved by the parser.
+    println(Path.GetDirectoryName("C:/data/"));     // C:/
+
+    // Dots are part of the extension only on the final component.
+    println(Path.GetExtension("C:/archive.tar.gz")); // .gz
+
+    // Multiple leading dots count as a single extension.
+    println(Path.GetFileNameWithoutExtension("backup..old.txt")); // backup..old
+
+    // Paths with no dot return an empty extension.
+    println(Path.GetExtension("Makefile"));         // (empty)
+    println(Path.HasExtension("Makefile"));         // false
+}
+```
+
+<Info>
+For large files or streaming access, use `FileStream` instead of
+  `File.ReadAllText` / `File.WriteAllText`. The all-text
+  helpers load the entire file into memory, which is convenient for configuration or log headers but
+  unsuitable for multi-gigabyte data.
+</Info>
+
+## See also
+
+  - [`Directory`](/stdlib/filesystem/directory-and-directoryinfo) — list, create, and inspect directories.
+  - [`FileStream`](/library-building/tutorials/example-async-io) — stream-oriented file access for large or binary data.
+  - [`Path.GetFullPath`](/stdlib/filesystem/file-and-path) — resolve relative paths against the working directory.
+
+## Source
+
+  The filesystem implementation ships as part of `ShardScript.Framework`. The native
+  binding for `File`, `Path`, and related types is in
+  `ShardScript.Framework/system/filesystem.shard.cpp`.

@@ -1,0 +1,281 @@
+---
+title: TaskCompletionSource<T>
+---
+
+## Summary
+
+  `TaskCompletionSource<T>` is the manual control side of the
+  ShardScript async model. It creates a `ValueTask<T>` that starts
+  in the `PENDING` state and exposes methods to transition that task to
+  `COMPLETED` or `FAULTED`, enabling callback-based
+  or event-driven code to participate in `await`-based workflows.
+
+## Syntax
+
+  `TaskCompletionSource<T>` is a generic class declared in the
+  `async` namespace. The type parameter `T` is the
+  result type of the task produced by the `Task` property.
+
+// tcs_syntax.shard
+```csharp
+using async;
+
+// Create a source that produces a ValueTask<string>.
+tcs: TaskCompletionSource<string> = new TaskCompletionSource<string>();
+
+// Obtain the awaitable task.
+task: ValueTask<string> = tcs.Task;
+
+// Complete the task from any context.
+tcs.SetResult("ready");
+
+// Or signal failure.
+tcs.SetException(new RuntimeException());
+```
+
+## Parameters / Arguments
+
+| Member | Parameters | Description |
+| --- | --- | ---
+| `init()` | — | Creates a new TaskCompletionSource&lt;T&gt; and allocates an internal ValueTask&lt;T&gt; in the PENDING state. |
+| `SetResult(result)` | `result`: `T` | Transitions the internal task to COMPLETED and stores the result value. |
+| `SetException(exception)` | `exception`: `any` (typically IThrowable) | Transitions the internal task to FAULTED and stores the exception object. |
+
+  The `Task` property takes no arguments. It returns the same
+  `ValueTask<T>` instance every time it is accessed.
+
+## Returns
+
+| Member | Return Type | Description |
+| --- | --- | ---
+| `Task` (property) | `ValueTask<T>` | The task that awaits can observe. The task is created during init() and never changes. |
+| `SetResult(result)` | `void` | Returns nothing. The result is stored inside the ValueTask&lt;T&gt;. |
+| `SetException(exception)` | `void` | Returns nothing. The exception is stored inside the ValueTask&lt;T&gt;. |
+
+## Exceptions / Errors
+
+  - **Type mismatch** — Passing a result value whose type does not match the generic argument `T` fails semantic analysis.
+  - **Invalid await target** — Attempting to `await` the `TaskCompletionSource<T>` itself instead of `.Task` produces a compile error; only the `ValueTask<T>` is awaitable.
+  - **Faulted task** — If the task is completed with `SetException`, calling `ValueTask.Wait` or reading `Result` after the task is faulted re-throws the stored exception on the caller.
+  - **Accessing Result before completion** — Reading `.Result` while the task is still `PENDING` returns the default value for `T`; always wait or check `IsCompleted` first.
+
+<Warning title="SetCanceled is not implemented">
+A `SetCanceled()` method is not currently exposed on
+  `TaskCompletionSource<T>`. To represent cancellation, call
+  `SetException` with a cancellation-specific exception type or use a
+  `CancellationToken` to short-circuit work before the task is completed.
+</Warning>
+
+## Remarks
+
+  **State machine and continuation resume.** The internal
+  `ValueTask<T>` stores a single continuation field. When
+  `SetResult` or `SetException` is called, the
+  implementation sets the task state, stores the result or exception, and invokes
+  `ResumeContinuation`. If exactly one awaiter is registered, that awaiter
+  resumes; if no awaiter is registered yet, the continuation is invoked as soon as one attaches.
+
+  **Single continuation limitation.** The current implementation stores only one
+  continuation per task. If multiple callers independently `await` the same
+  `ValueTask<T>`, only the last registered continuation is resumed.
+  To support multiple awaiters, wrap the source in an async method that returns a fresh
+  `ValueTask<T>` to each caller, or broadcast the result through a
+  collection or event.
+
+  **Generic allocation.** During construction the runtime resolves the concrete
+  generic argument `T` from the instance type shape and allocates a
+  `ValueTask<T>` via `AllocateGeneric`. The
+  property getter simply returns the pre-created field, so repeated accesses of
+  `.Task` are allocation-free.
+
+  **Synchronous completion fast path.** If `SetResult` is called
+  before anyone awaits `.Task`, the task is already
+  `COMPLETED` when the awaiter attaches. The awaiter fast path detects this
+  and returns immediately without suspending the state machine or interacting with the event loop.
+
+  **Threading and event loop.** ShardScript uses a cooperative, single-threaded event
+  loop backed by libuv. `SetResult` and
+  `SetException` are safe to call from any async context or native callback,
+  but the continuation itself resumes on the same event-loop thread. Avoid blocking the loop inside
+  completion callbacks.
+
+<Info>
+Use `TaskCompletionSource<T>` whenever you need to bridge an
+  imperative or callback-based operation into the async/await model: timers, I/O readiness
+  notifications, background work completions, or native callbacks that report results later.
+</Info>
+
+## Examples
+
+  **Basic callback bridge.** A separate async operation completes the source after a
+  short delay.
+
+// tcs_callback_bridge.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public static async func CompleteLater(tcs: TaskCompletionSource<string>) -> Task
+{
+    // Simulate work that finishes after 10ms.
+    await Task.Delay(10);
+    tcs.SetResult("done asynchronously");
+}
+
+public static func Main() -> void
+{
+    tcs: TaskCompletionSource<string> = new TaskCompletionSource<string>();
+    CompleteLater(tcs);
+
+    // Pump the event loop until the task completes.
+    ValueTask.Wait(tcs.Task);
+
+    println(tcs.Task.Result);
+}
+```
+
+  **Synchronous completion.** When the result is known before any awaiter attaches,
+  the awaiter fast path returns immediately.
+
+// tcs_sync_completion.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public static async func GetResultSync() -> ValueTask<string>
+{
+    tcs: TaskCompletionSource<string> = new TaskCompletionSource<string>();
+
+    // Complete before anyone awaits; no suspension occurs.
+    tcs.SetResult("sync");
+
+    return await tcs.Task;
+}
+
+public static func Main() -> void
+{
+    task: ValueTask<string> = GetResultSync();
+    ValueTask.Wait(task);
+    println(task.Result);
+}
+```
+
+  **Error propagation.** Use `SetException` to propagate failures
+  into the await site.
+
+// tcs_exception.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public static async func FailLater(tcs: TaskCompletionSource<int>) -> Task
+{
+    await Task.Delay(10);
+    tcs.SetException(new RuntimeException());
+}
+
+public static func Main() -> void
+{
+    tcs: TaskCompletionSource<int> = new TaskCompletionSource<int>();
+    FailLater(tcs);
+
+    try
+    {
+        ValueTask.Wait(tcs.Task);
+        println(tcs.Task.Result);
+    }
+    catch (ex: RuntimeException)
+    {
+        println("task faulted as expected");
+    }
+}
+```
+
+  **Single-awaiter limitation.** Only one continuation is stored. Awaiting the same task
+  from two independent callers demonstrates that the second awaiter overwrites the first.
+
+// tcs_single_continuation.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public static async func AwaitAndPrint(tcs: TaskCompletionSource<string>, label: string) -> Task
+{
+    result: string = await tcs.Task;
+    println(label + ": " + result);
+}
+
+public static func Main() -> void
+{
+    tcs: TaskCompletionSource<string> = new TaskCompletionSource<string>();
+
+    // Only one continuation is stored on the internal ValueTask<T>.
+    AwaitAndPrint(tcs, "first");
+    AwaitAndPrint(tcs, "second");
+
+    tcs.SetResult("shared");
+
+    // Pump the loop long enough for the one resumed continuation to finish.
+    Task.Delay(50).Wait();
+}
+```
+
+  **Checking completion before reading the result.** Avoid reading
+  `.Result` on a pending task.
+
+// tcs_check_completion.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    tcs: TaskCompletionSource<int> = new TaskCompletionSource<int>();
+
+    if (tcs.Task.IsCompleted)
+    {
+        println("result: " + tcs.Task.Result);
+    }
+    else
+    {
+        println("task is still pending");
+    }
+
+    tcs.SetResult(42);
+
+    if (tcs.Task.IsCompleted)
+    {
+        println("result: " + tcs.Task.Result);
+    }
+}
+```
+
+<Warning title="Common mistakes">
+
+    - **Calling SetResult more than once** — The current implementation does not guard against multiple completions. The state and stored value are overwritten, which can corrupt awaiting logic. Complete each source exactly once.
+    - **Awaiting the source instead of .Task** — `await tcs` is invalid; always write `await tcs.Task`.
+    - **Expecting multi-cast continuations** — If several callers need the same result, give each caller its own `ValueTask<T>` rather than sharing one source's task directly.
+
+</Warning>
+
+## See also
+
+  - [`CancellationToken & CancellationTokenSource`](/stdlib/async/cancellation-token-and-source) — cooperative cancellation for async work.
+  - [`Stream Interfaces`](/stdlib/streams/stream-interfaces) — async read/write contracts that consume `ValueTask<T>`.
+
+## Source
+
+  The `shard.async` implementation ships as part of
+  `ShardScript.Framework`. The native binding for
+  `TaskCompletionSource<T>`, `ValueTask<T>`, and the async
+  state machine helpers is in `ShardScript.Framework/system/async.shard.cpp`.

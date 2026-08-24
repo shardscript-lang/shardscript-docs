@@ -1,0 +1,152 @@
+---
+title: Enums
+---
+
+## Summary
+
+  A **ShardScript enum** is a value type that defines a set of named integral
+  constants. Enums implement `IPrintable`, support equality comparison,
+  and can be declared as `: flags` for bitwise flag composition.
+
+## Syntax
+
+| Construct | Syntax | Description |
+| --- | --- | ---
+| Basic enum | `public enum Name { A, B, C }` | Declares an enum with sequential values starting at 0. |
+| Explicit values | `public enum Name { A = 1, B = 5, C }` | Each field names a constant int64 value. Missing values continue from the previous field. |
+| Flags enum | `public enum Name : flags { A, B, C }` | Fields are auto-assigned powers of two (1 &lt;&lt; i) and cannot have explicit initializers. |
+| Field access | `Name.Field` | Refers to an enum constant. |
+| Bitwise context | `Read \| Write` | Inside a bitwise expression, enum fields can be referenced without the type prefix. |
+
+## Parameters / Arguments
+
+  - `Name` — the identifier of the enum type. Enum members are accessed with  `Name.Field`.
+  - `Field` — an enum constant name. In a bitwise expression whose expected type is the enum, the field name can be written alone.
+  - `value` — an integer literal or constant expression used as an explicit initializer for a non-flags enum field.
+
+## Returns
+
+| Expression | Return Type | Value |
+| --- | --- | ---
+| `Name.Field` | Name | The enum value whose underlying integer is the field value. |
+| `a == b` | bool | True if both enum values have the same underlying integer. |
+| `a != b` | bool | True if the underlying integers differ. |
+| `a \| b` | Name | Bitwise OR of the underlying values, returned as the enum type. |
+| `a & b` | Name | Bitwise AND of the underlying values, returned as the enum type. |
+| `a.HasFlag(b)` | bool | True if all bits set in `b` are also set in `a`. |
+| `a.ToString()` | string | The field name for regular enums; a "\|"-separated list of flag names for flags enums. |
+
+## Exceptions / Errors
+
+  - **Compile error — flags enum initializer:**  `public enum Flags : flags { A = 1 }` is rejected. Flags fields are always assigned `1 << i` automatically.
+  - **Compile error — type mismatch in comparison:**  Comparing two enum values of different types is not allowed.
+  - **Compile error — invalid bitwise operand:**  `&` and `|` on enum values require both operands to be the same enum type.
+
+## Remarks
+
+  **Underlying values.** Every enum stores a 64-bit signed integer. Without an explicit
+  initializer, the first field is `0` and each subsequent field is one greater
+  than the previous. After an explicit initializer, the sequence continues incrementing from that
+  value. For flags enums the sequence is replaced by powers of two.
+
+  **Flags enums.** Declaring an enum with `: flags` tells the
+  compiler to auto-assign values `1 << i` and tells
+  `ToString()` to format combinations as a pipe-separated list of matching
+  field names. Use `|` to combine flags, `&` to mask
+  flags, and `HasFlag` to test for a flag.
+
+  **Bitwise shorthand.** When the left-hand side of a bitwise expression is an enum
+  value, the compiler treats bare field identifiers on the right as members of that enum. For
+  example, `Permissions.Read | Write` resolves `Write`
+  to `Permissions.Write`.
+
+  **Printing and string conversion.** Enums implement `IPrintable`,
+  so they can be passed directly to `print` or `println`.
+  Calling `ToString()` returns the same textual representation. If no named
+  field matches the value, the underlying integer is returned as a string.
+
+<Info>
+Ordering comparisons (`<`, `>`,
+  `<=`, `>=`) are not supported for enum values.
+  Compare the underlying integer values explicitly if you need ordering.
+</Info>
+
+## Examples
+
+  **Basic enum declaration and comparison**
+
+// enum_basic.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public enum Color
+{
+    Red,
+    Green,
+    Blue
+}
+
+public static func Main() -> void
+{
+    color: Color = Color.Red;
+
+    println(color);              // Red
+    println(Color.Blue);         // Blue
+    println(color == Color.Red); // true
+    println(color != Color.Green); // true
+}
+```
+
+  **Explicit initializers**
+
+// enum_explicit.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public enum HttpStatus
+{
+    Ok = 200,
+    NotFound = 404,
+    Error = 500
+}
+
+public static func Main() -> void
+{
+    status: HttpStatus = HttpStatus.NotFound;
+    println(status.ToString());  // NotFound
+}
+```
+
+  **Flags enum**
+
+// enum_flags.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public enum Permissions : flags
+{
+    None,
+    Read,
+    Write,
+    Execute
+}
+
+public static func Main() -> void
+{
+    access: Permissions = Permissions.Read | Permissions.Write;
+
+    println(access);                          // Read | Write
+    println(access.HasFlag(Permissions.Read));   // true
+    println(access.HasFlag(Permissions.Execute)); // false
+
+    // Bitwise shorthand: Write is resolved as Permissions.Write.
+    combined: Permissions = Permissions.Read | Write | Execute;
+    println(combined);                        // Read | Write | Execute
+}
+```

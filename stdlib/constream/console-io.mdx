@@ -1,0 +1,270 @@
+---
+title: Console I/O
+---
+
+## Summary
+
+  The `shard.stdio` library exposes the `stdio` namespace for
+  console input and output. It provides text printing, line reading, cursor control, single-key input, and
+  structured object dumping. Every member is `static`; there is no instance of a
+  console class.
+
+## Syntax
+
+  Import the namespace with `using stdio;` and call the helpers directly by name.
+  All methods are registered with `LINK_STATIC` on the `stdio`
+  namespace.
+
+// stdio_intro.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    println("hello");
+
+    name: string = input();
+    println("hello, " + name);
+}
+```
+
+## Parameters / Arguments
+
+| Method | Parameters | Returns | Description |
+| --- | --- | --- | ---
+| `print(message)` | `message`: any printable value | void | Writes the string representation of a value to stdout without a trailing newline. |
+| `println(message)` | `message`: any printable value | void | Writes the string representation of a value followed by a newline. |
+| `println(enumerable)` | `enumerable`: `IEnumerable<T>` | void | Writes the elements of an enumerable between brackets, separated by commas. |
+| `input()` | (no parameters) | string | Reads a single line from stdin and returns it without the trailing newline. |
+| `input(prompt)` | `prompt`: string | string | Writes the prompt to stdout, then reads and returns a single line from stdin. |
+| `clear()` | (no parameters) | void | Sends VT100 erase-screen and home-cursor escape codes to the terminal. |
+| `setCursor(x, y)` | `x`: int, `y`: int | void | Moves the cursor to the zero-based column `x` and row `y` using VT100 escape codes. |
+| `setCursorVisible(visible)` | `visible`: bool | void | Shows or hides the text cursor with VT100 escape codes. |
+| `readKey()` | (no parameters) | string | Reads a single character from stdin without waiting for Enter and returns it as a one-character string. |
+| `Dump(obj)` | `obj`: T | void | Writes a structured, colorized dump of any value to stdout. |
+| `Dump(obj, maxDepth, colorized)` | `obj`: T, `maxDepth`: int, `colorized`: bool | void | Writes a structured dump with configurable recursion depth and color output. |
+
+## Returns
+
+| Member | Return Type | Notes |
+| --- | --- | ---
+| `print` | void | No value; output is written directly to native stdout. |
+| `println` | void | No value; output ends with a newline. |
+| `input` | string | The line read from stdin, without the trailing newline. Empty string when stdin is at end-of-file. |
+| `clear` | void | No value; clears the visible terminal buffer. |
+| `setCursor` | void | No value; coordinates are zero-based. |
+| `setCursorVisible` | void | No value; visible cursor may not be supported on every terminal. |
+| `readKey` | string | Single-character string; empty on immediate EOF. |
+| `Dump` | void | No value; structured representation is written to native stdout. |
+
+## Exceptions / Errors
+
+  - **IEnumerable required for enumerable println** —  `println(enumerable)` throws when the argument does not implement  `IEnumerable<T>`.
+  - **Enumerator contract failure** —  `println(enumerable)` throws when the enumerator returned by  `GetEnumerator` lacks `MoveNext` or  `Current`.
+  - **VT100 support required** —  `clear`, `setCursor`, and  `setCursorVisible` emit ANSI escape sequences. Terminals that do not interpret VT100 codes display raw escape characters instead of changing the cursor or screen.
+
+## Remarks
+
+  **Static namespace methods.** Every helper is attached directly to the
+  `stdio` namespace with `LINK_STATIC`. There is no console
+  object to construct; calls compile to `CALLSTATICMETHODSYMBOL` and resolve at
+  compile time.
+
+  **Output channel.** The stdio helpers write through native
+  `std::wcout`. On Windows the library attempts to enable VT100 processing during
+  startup so that color and cursor escape codes work in modern consoles. Output is not returned as a
+  ShardScript string and cannot be captured by assigning the result of `println`.
+
+  **Prompt input.** The `input(prompt: string)` overload writes the
+  prompt to `std::wcout` without a trailing newline, then reads a line from
+  `std::wcin`. It is equivalent to calling `print(prompt)`
+  followed by `input()`, but avoids the separate statement.
+
+  **Dump output format.** `Dump` renders primitives, arrays, enums, and
+  objects. Null values print as `null`, booleans as `true` or
+  `false`, integers/doubles as numbers, chars inside single quotes, and strings
+  inside double quotes with escaped control characters. Arrays render as comma-separated lists inside
+  square brackets. Objects render as indented `{ key: value }` blocks that include
+  public properties first, then fields. Compiler-generated backing fields are omitted.
+
+  **Depth and circularity protection.** The default dump stops at a depth of 3. Deeper objects
+  are summarized as `[object TypeName]`. If the object graph contains a cycle, the
+  dumper prints `[Circular]` instead of recursing into the repeated object. These
+  guards prevent infinite output and stack overflow when dumping arbitrary object graphs.
+
+  **Colorization.** The default `Dump(value)` overload uses ANSI colors:
+  magenta for null and booleans, green for strings and characters, yellow for numbers, cyan for object
+  keys, and gray for type annotations and truncation markers. Pass `false` as the
+  third argument to disable colors, or call the overload with explicit `maxDepth` and
+  `colorized` parameters.
+
+  **Properties take precedence over fields.** When dumping an object, the dumper first
+  iterates declared properties with public getters, then iterates fields that have not already been printed
+  as a property. This avoids duplicate output for auto-implemented properties that store their value in a
+  compiler-generated backing field.
+
+## Examples
+
+  **Basic printing and reading.**
+
+// stdio_basic.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    print("Enter your name: ");
+    name: string = input();
+    println("Hello, " + name + "!");
+}
+```
+
+  **Reading with a prompt.**
+
+// stdio_input_prompt.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // The prompt is written to stdout before reading the line.
+    name: string = input("Enter your name: ");
+    println("Hello, " + name + "!");
+}
+```
+
+  **Dumping primitives and objects.**
+
+// stdio_dump.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Point
+{
+    public X: int;
+    public Y: int;
+
+    public init(x: int, y: int)
+    {
+        this.X = x;
+        this.Y = y;
+    }
+}
+
+public class Person
+{
+    public Name: string;
+    public Age: int;
+    public Location: Point;
+
+    public init(name: string, age: int)
+    {
+        this.Name = name;
+        this.Age = age;
+        this.Location = new Point(10, 20);
+    }
+}
+
+public static func Main() -> void
+{
+    person: Person = new Person("Alice", 30);
+
+    println("=== default Dump ===");
+    Dump(person);
+
+    println("=== Dump with depth=1, no colors ===");
+    Dump(person, 1, false);
+
+    println("=== Dump primitives ===");
+    Dump(null);
+    Dump(true);
+    Dump(42);
+    Dump(3.14);
+    Dump('A');
+    Dump("hello world");
+}
+```
+
+  **Dumping arrays and limiting recursion.**
+
+// stdio_dump_array.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    values: int[] = [1, 2, 3];
+    Dump(values);
+
+    // Limit how deeply nested objects are expanded.
+    nested: int[][] = [[1, 2], [3, 4]];
+    Dump(nested, 1, false);
+}
+```
+
+  **Terminal cursor and screen control.**
+
+// stdio_cursor.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Hide the cursor while drawing.
+    setCursorVisible(false);
+
+    // Clear the screen and move to the top-left cell.
+    clear();
+    setCursor(0, 0);
+    println("drawn at the top-left corner");
+
+    // Show the cursor again before exiting.
+    setCursorVisible(true);
+}
+```
+
+  **Reading a single key press.**
+
+// stdio_readkey.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    println("Press any key...");
+    key: string = readKey();
+    println("You pressed: " + key);
+}
+```
+
+<Info>
+Use `Dump` for debugging and interactive inspection only. It writes directly to
+  native stdout, performs reflection over every field and property, and can produce large output for deep
+  object graphs. Do not leave `Dump` calls in production hot paths.
+</Info>
+
+## See also
+
+  - [`Developer Tools`](/stdlib/debug/developer-tools) — runtime introspection helpers such as  `typeof` and `sizeof`.
+  - [`Console I/O`](/stdlib/constream/console-io) — this article; the `stdio` namespace reference.
+
+## Source
+
+  The console I/O implementation ships as part of `ShardScript.Framework`. The native
+  binding for `print`, `println`, `input`,
+  `readKey`, `Dump`, and related helpers is in
+  `ShardScript.Framework/system/constream.shard.cpp`.

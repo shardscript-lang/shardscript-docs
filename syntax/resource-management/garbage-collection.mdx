@@ -1,0 +1,320 @@
+---
+title: Automatic Memory Management
+---
+
+## Introduction
+
+  ShardScript is a hosted, embedded language: every value — integers, strings,
+  arrays, and class instances — is represented internally as an
+  `ObjectInstance` that lives on the virtual machine's
+  heap. The runtime does not require you to allocate or free this memory by hand.
+  Instead, it uses **automatic reference counting** with object
+  tracking to reclaim instances as soon as they become unreachable.
+
+  There is no background collector thread, no stop-the-world pause, and no
+  non-deterministic finalization queue. When the last reference to an object
+  disappears, the instance is collected immediately. This makes memory behavior
+  predictable, which is important when ShardScript is embedded inside games,
+  real-time tools, or hosts that cannot tolerate arbitrary GC pauses.
+
+## What it is
+
+  The ShardScript garbage collector is three cooperating layers:
+
+  - **Allocation layer** —  `AllocateInstance`, `AllocateGeneric`, and  `AllocateArray` create new objects on the GC heap. Each object starts with a reference count of `0` and is registered in the `InstancesHeap`.
+  - **Reference-tracking layer** —  `IncrementReference` and  `DecrementReference` update a 64-bit counter stored in every `ObjectInstance`. Singletons and the global  `NullInstance` skip counting entirely.
+  - **Collection layer** —  `DestroyInstance` decrements the counter and, when it reaches zero, removes the object from the heap and calls  `TerminateInstance`. Termination recursively releases every reference-typed field and array element, then frees the raw memory block.
+
+  The runtime adjusts reference counts at well-defined moments:
+
+| Operation | Trigger | Effect |
+| --- | --- | ---
+| +1 | Argument pushed onto a callee frame | The callee holds a live reference for the duration of the call. |
+| +1 | Field or array element assignment | The newly stored value gains an owner. |
+| +1 | Exception raised, re-thrown, or caught | The exception object stays alive during unwinding. |
+| -1 | Old value replaced in field or element | The previous value loses an owner. |
+| -1 | Frame return or POPSTACK opcode | Temporary results and locals are released. |
+
+## When to use it
+
+  Automatic memory management is always active; you do not opt in or out. You
+  rely on it whenever you create objects, arrays, closures, or async tasks.
+  Because collection is deterministic, you can use it for short-lived scratch
+  objects in tight loops, large intermediate buffers, and long-lived service
+  objects held in static fields.
+
+  The design is most valuable when:
+
+  - **Predictable timing matters** — frame budgets, audio threads, or transaction handlers cannot afford generational collection pauses.
+  - **Hosting safety matters** — every value is an `ObjectInstance`, so native host code never holds dangling script pointers.
+  - **Simplicity matters** — there is no separate managed/unmanaged heap distinction for ordinary script code.
+
+## Remarks
+
+  **Small-integer cache.** The runtime pre-allocates 261 cached
+  integer objects covering the inclusive range `-5` to
+  `255`. Whenever a literal or arithmetic result falls in
+  that range, the existing singleton is reused instead of allocating a new
+  `int`. This makes small loops and arithmetic nearly
+  allocation-free. Values outside the cache, such as `1000`,
+  are fresh heap allocations and are reference-counted normally.
+
+  **Boolean and null singletons.** `true` and
+  `false` are lazily allocated once per process and marked
+  as singletons. `null` is represented by a single global
+  `NullInstance`. None of these participate in reference
+  counting, so they are never collected.
+
+  **Collection roots.** An object stays alive as long as a path of
+  references reaches it from a root. The primary roots are:
+
+  - **Static fields** — stored in the `GarbageCollector` itself and released only at process shutdown.
+  - **Evaluation stack slots** — local variables, temporaries, and expression results held in the current call frame.
+  - **Async frame owners** — pending `Task` and `ValueTask` objects keep their originating frame alive across await suspension points.
+
+  **Cyclic references.** Pure reference counting cannot collect a
+  cycle whose members only point to one another. ShardScript handles this during
+  termination: when one object in a cycle becomes unreachable,
+  `TerminateInstance` walks every reference-typed field and
+  array element, recursively decrementing and cascading. As long as the cycle is
+  detached from all roots, the entire graph is reclaimed.
+
+<Info>
+Cycles are safe in ShardScript, but only because termination is recursive. A
+  self-referencing object that is still reachable from a static field or a local
+  variable will not be collected until that root is released.
+</Info>
+
+  **Transient instances.** Some runtime helpers wrap memory they do
+  not own, such as value-type fields boxed for reflection-style access. These are
+  marked transient; termination skips freeing their raw memory because the memory
+  belongs to another object. Ordinary script objects are never transient.
+
+  **InstancesHeap.** Every allocated object lives in a vector of
+  smart pointers. Collection removes the pointer from the vector and then
+  terminates the object. The vector is not compacted; freed slots remain as empty
+  entries until reused. At shutdown, `GarbageCollector::Terminate`
+  snapshots the heap and releases every remaining instance, starting with static
+  fields.
+
+<Warning title="User-defined finalizers are not implemented">
+The runtime cleans up fields, arrays, and raw memory automatically, but it does
+  not currently invoke script-level destructors or finalizers. If you need
+  deterministic release of unmanaged resources such as file handles or sockets,
+  use `defer` or explicit disposal through
+  `IDisposable` instead of waiting for collection.
+</Warning>
+
+## Examples
+
+  **Basic allocation and scope-based cleanup.**
+
+// gc_basic.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Widget
+{
+    public Name: string;
+}
+
+public static func Main() -> void
+{
+    // The new Widget is allocated on the GC heap with reference count 0.
+    w: Widget = new Widget();
+    w.Name = "gear";
+
+    println(w.Name); // gear
+
+    // When 'w' goes out of scope at the end of Main, the reference count drops
+    // to 0 and the Widget instance is collected immediately.
+}
+```
+
+  **Reference counting through field assignment.**
+
+// gc_refcount_cycle.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Node
+{
+    public Value: int;
+    public Next: Node;
+}
+
+public static func Main() -> void
+{
+    // Two independent allocations, each with reference count 0.
+    a: Node = new Node();
+    a.Value = 1;
+
+    b: Node = new Node();
+    b.Value = 2;
+
+    // Field assignment increments the new value's reference count.
+    a.Next = b;  // b now has one reference.
+    b.Next = a;  // a now has one reference.
+
+    // At end of scope:
+    // 1. b.Next decrements a -> 0, so a is collected.
+    // 2. a.Next decrements b -> 0, so b is collected.
+    // The cycle is broken during recursive termination.
+}
+```
+
+  **Small-int cache and singletons.**
+
+// gc_cache.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Values from -5 to 255 are served from the pre-allocated cache.
+    a: int = 42;
+    b: int = 42;
+
+    // Both variables point to the same cached ObjectInstance.
+    println(a); // 42
+    println(b); // 42
+
+    // The loop variable is cached for every value up to 255; no allocation.
+    for (i: int = 0; i < 10; i = i + 1)
+    {
+        println(i);
+    }
+
+    // Values outside the cache are ordinary heap objects.
+    big: int = 1000;
+    println(big); // 1000
+
+    // Boolean and null are also singletons.
+    t: bool = true;
+    f: bool = false;
+    nothing: Widget = null;
+
+    println(t);       // true
+    println(f);       // false
+    println(nothing); // (empty/null)
+}
+```
+
+  **Collection roots: locals versus static fields.**
+
+// gc_roots.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Buffer
+{
+    public Data: int[];
+}
+
+public static class Globals
+{
+    public static Shared: Buffer;
+}
+
+public static func MakeBuffer(size: int) -> Buffer
+{
+    // The returned Buffer is kept alive by the caller's assignment.
+    b: Buffer = new Buffer();
+    b.Data = new int[size];
+    return b;
+}
+
+public static func Main() -> void
+{
+    // 'local' is a root only while Main is executing.
+    local: Buffer = MakeBuffer(4);
+    local.Data[0] = 10;
+    println(local.Data[0]); // 10
+
+    // 'Globals.Shared' is a static-field root and survives until shutdown.
+    Globals.Shared = MakeBuffer(8);
+    Globals.Shared.Data[0] = 20;
+    println(Globals.Shared.Data[0]); // 20
+
+    // At end of Main, 'local' is released. 'Globals.Shared' remains alive.
+}
+```
+
+  **null and NullInstance.**
+
+// gc_null.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Box
+{
+    public Content: string;
+}
+
+public static func Main() -> void
+{
+    // Default-initialized reference fields hold null.
+    b: Box = new Box();
+    println(b.Content); // (empty)
+
+    // Assigning a real value increments its reference count.
+    b.Content = "payload";
+    println(b.Content); // payload
+
+    // Assigning null decrements the old value's reference count; "payload" is
+    // collected because no other reference exists.
+    b.Content = null;
+    println(b.Content); // (empty)
+}
+```
+
+  **Arrays and element references.**
+
+// gc_arrays.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Label
+{
+    public Text: string;
+}
+
+public static func Main() -> void
+{
+    // An array of reference types; elements start as null.
+    labels: Label[] = new Label[3];
+
+    first: Label = new Label();
+    first.Text = "first";
+
+    // Storing in the array increments the object's reference count.
+    labels[0] = first;
+    labels[1] = first; // The same Label now has two references.
+
+    // Overwriting an element decrements the previous value.
+    labels[1] = null;  // first drops from 2 to 1.
+
+    // The array itself is released when it goes out of scope, which in turn
+    // releases all remaining elements.
+    println(labels[0].Text); // first
+}
+```
+
+## Related articles
+
+  - `syntax/resource-management/object-lifetime` — how value types, reference types, scopes, captures, and async state machines determine when an object is alive.
+  - `common-language-features/defer-and-idisposable` — deterministic cleanup for unmanaged resources through `defer` and `IDisposable`.
+  - `library-building/native-handles-and-object-lifetime` — wrapping native pointers in managed objects and keeping them alive across async boundaries.
+  - `library-building/garbage-collection-rules` — the full lifetime contract for native-library callbacks and return values.

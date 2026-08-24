@@ -1,0 +1,318 @@
+---
+title: MethodSymbol Builder
+---
+
+## Summary
+
+  `SymbolBuilder<MethodSymbol>` is returned by `AddMethod`.
+  It exposes a chainable interface for completing the method signature and binding it to C++ code. Every
+  native callback has the same signature, so the builder is the place where the ShardScript-facing contract
+  (name, return type, linking, accessibility, parameters, generics) is reconciled with the C++ callback that
+  runs at runtime.
+
+## Syntax
+
+  Obtain the builder from a parent `SymbolBuilder`, then chain the configuration calls
+  in any order before finally calling `SetCallback`:
+
+// mylibrary.cpp
+```cpp
+#include <ShardScript.hpp>
+
+using namespace shard;
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> ns(context, L"mylibrary");
+
+    SymbolBuilder<MethodSymbol> method = ns.AddMethod(
+        L"Compute",
+        TYPE_INT,
+        LINK_STATIC,
+        ACS_PUBLIC);
+
+    method.AddParameter(L"left", TYPE_INT)
+          .AddParameter(L"right", TYPE_INT)
+          .SetCallback([](const CallState& context)
+          {
+              std::int64_t left = context.Args[0]->AsInteger();
+              std::int64_t right = context.Args[1]->AsInteger();
+              return context.Collector.FromValue(left + right);
+          });
+}
+```
+
+| Method | Parameters | Returns | Description |
+| --- | --- | --- | ---
+| `AddMethod(name, returnType, linking, access)` | `name`, `returnType`, `linking`, `access` | `SymbolBuilder<MethodSymbol>` | Creates a namespace-level method. |
+| `AddMethod(name, returnType, linking, access)` | `name`, `returnType`, `linking`, `access` | `SymbolBuilder<MethodSymbol>` | Creates a class method. |
+| `AddMethod(name, returnType, linking, access)` | `name`, `returnType`, `linking`, `access` | `SymbolBuilder<MethodSymbol>` | Creates a struct method. |
+| `AddMethod(name, returnType, linking, access)` | `name`, `returnType`, `linking`, `access` | `SymbolBuilder<MethodSymbol>` | Creates an interface method signature. |
+
+## Parameters / Arguments
+
+| Method | Parameters | Returns | Description |
+| --- | --- | --- | ---
+| `AddParameter(name, type)` | `name`, `type` | `SymbolBuilder<MethodSymbol>&` | Appends a parameter to the method signature. Parameters are evaluated in the order they are added. |
+| `SetCallback(callback)` | `callback` | `SymbolBuilder<MethodSymbol>&` | Binds the method invocation to native C++ code. |
+| `AddTypeParameter(name)` | `name` | `SymbolBuilder<TypeParameterSymbol>` | Adds a generic type parameter to the method. |
+| `IsImplementationOf(abstractMethod)` | `abstractMethod` | `SymbolBuilder<MethodSymbol>&` | Marks this method as the concrete implementation of an interface or abstract method. |
+| `DeclareGlobal()` | None | `SymbolBuilder<MethodSymbol>&` | Registers the method so it can be invoked without a namespace prefix. |
+
+## Returns
+
+| Call | Return type | Description |
+| --- | --- | ---
+| `AddParameter` | `SymbolBuilder<MethodSymbol>&` | Returns the same method builder so calls can be chained. |
+| `SetCallback` | `SymbolBuilder<MethodSymbol>&` | Returns the same method builder. |
+| `IsImplementationOf` | `SymbolBuilder<MethodSymbol>&` | Returns the same method builder. |
+| `DeclareGlobal` | `SymbolBuilder<MethodSymbol>&` | Returns the same method builder. |
+| `AddTypeParameter` | `SymbolBuilder<TypeParameterSymbol>` | Returns a new builder for the type parameter. Call `.Get()` to retrieve the `TypeParameterSymbol*`. |
+| `.Get()` | `MethodSymbol*` or `TypeParameterSymbol*` | Retrieves the raw symbol pointer from the builder. |
+
+## Exceptions / Errors
+
+  - **Parameter type mismatch at runtime** — ShardScript resolves overloads by name, parameter count, and parameter types. If the registered parameter list does not match the call site, overload resolution fails.
+  - **Missing callback** — A method registered without  `SetCallback` resolves at compile time but does nothing when invoked.
+  - **Instance callback reads the wrong argument** — For  `LINK_INSTANCE` methods, `context.Args[0]` is  `this`. Treating it as the first real parameter reads instance state as a parameter.
+  - **Type parameter index out of range** — Reading  `context.Frame->TypeArguments` at an index that does not correspond to an `AddTypeParameter` call produces undefined behavior.
+  - **Interface implementation mismatch** —  `IsImplementationOf` requires matching name, return type, parameter count, and parameter types. A mismatch may cause the interface to remain unimplemented.
+
+## Remarks
+
+<Info title="Native library shape">
+A ShardScript native library is any shared library (`.dll` on Windows, `.so` on Linux, `.dylib` on macOS) that exports the two C-linkage symbols `ShardLib_GetMetadata` and `ShardLib_EntryPoint`. It can be built from one or many C++ source files, live inside `ShardScript.Framework` or in a completely separate project, and links against the ShardScript runtime shared library using headers from `ShardScript/include`. For the full registration contract, see `native-library-overview.mdx`.
+</Info>
+
+  **Callback contract.** Every native callback, whether for a static method, an instance method,
+  a property getter, or an operator, has the same C++ signature:
+
+```cpp
+shard::ObjectInstance* Callback(const shard::CallState& context);
+```
+
+  The `context.Args` span contains `ObjectInstance*` pointers in
+  the order the parameters were registered. For `LINK_INSTANCE` methods, the first
+  element is the instance pointer. Read primitive values with helpers such as
+  `AsInteger()`, `AsDouble()`, or `AsString()`,
+  and box return values through `context.Collector.FromValue(...)`.
+
+  **Method-level type parameters.** A type parameter added with
+  `AddTypeParameter` is scoped to the method. At runtime the concrete substitution is
+  available through `context.Frame->TypeArguments`, in the same order as the
+  `AddTypeParameter` calls. Use the captured `TypeParameterSymbol*`
+  when registering parameter types or when constructing generic types through
+  `SymbolFactory`.
+
+  **Interface implementations.** To implement an interface method, capture the interface method
+  symbol with `.Get()` when registering the interface, then pass that pointer to
+  `IsImplementationOf` on the implementing class method. The parent class must also call
+  `Implements(interfaceSymbol)`.
+
+  **Global methods.** Calling `DeclareGlobal()` on a namespace-level method
+  makes it callable without the namespace prefix. Use sparingly to avoid polluting the global namespace.
+
+<Info>
+Keep cross-library symbol lookups lazy. If a callback uses types from another native library, look them up
+  inside an `EnsureSymbols` helper called from the callback rather than caching pointers
+  during static initialization.
+</Info>
+
+## Examples
+
+  **Namespace-level static method with multiple parameters.**
+
+// mylibrary.cpp
+```cpp
+static ObjectInstance* mylibrary_add(const CallState& context)
+{
+    std::int64_t left = context.Args[0]->AsInteger();
+    std::int64_t right = context.Args[1]->AsInteger();
+    std::int64_t sum = left + right;
+
+    return context.Collector.FromValue(sum);
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> ns(context, L"mylibrary");
+
+    ns.AddMethod(L"Add", TYPE_INT, LINK_STATIC, ACS_PUBLIC)
+      .AddParameter(L"left", TYPE_INT)
+      .AddParameter(L"right", TYPE_INT)
+      .SetCallback(&mylibrary_add);
+}
+```
+
+  ShardScript usage:
+
+// app.shard
+```csharp
+using stdio;
+using mylibrary;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    result: int = mylibrary.Add(10, 32);
+    println(result);   // 42
+}
+```
+
+  **Instance method that reads `this`.**
+
+// counters.cpp
+```cpp
+static FieldSymbol* g_counter_value = nullptr;
+
+static ObjectInstance* counter_increment(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    std::int64_t delta = context.Args[1]->AsInteger();
+
+    ObjectInstance* currentObj = self->GetField(g_counter_value->SlotIndex);
+    std::int64_t current = currentObj->AsInteger();
+    std::int64_t next = current + delta;
+
+    self->SetField(g_counter_value->SlotIndex, context.Collector.FromValue(next));
+
+    return context.Collector.FromValue(next);
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> ns(context, L"counters");
+
+    ns.AddClass(L"Counter", ACS_PUBLIC, LINK_INSTANCE, [](SymbolBuilder<ClassSymbol> cls)
+    {
+        g_counter_value = cls.AddField(L"_value", TYPE_INT, LINK_INSTANCE, ACS_PRIVATE);
+
+        cls.AddInit()
+           .SetCallback([](const CallState& context)
+           {
+               ObjectInstance* self = context.Args[0];
+               self->SetField(g_counter_value->SlotIndex, context.Collector.FromValue(0));
+               return self;
+           });
+
+        cls.AddMethod(L"Increment", TYPE_INT, LINK_INSTANCE, ACS_PUBLIC)
+           .AddParameter(L"delta", TYPE_INT)
+           .SetCallback(&counter_increment);
+    });
+}
+```
+
+  **Generic method with a type parameter.** The method-level type parameter is used both as a
+  parameter type and to allocate a correctly typed array.
+
+// utils.cpp
+```cpp
+static ObjectInstance* utils_toArray(const CallState& context)
+{
+    TypeSymbol* concreteT = context.Frame->TypeArguments[0];
+    ObjectInstance* value = context.Args[0];
+
+    ObjectInstance* arr = context.Collector.AllocateArray(concreteT, 1);
+    arr->SetElement(0, value, context.Frame);
+
+    return arr;
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolFactory factory(context.GetSemanticModel().Table.get());
+    SymbolBuilder<NamespaceSymbol> ns(context, L"utils");
+
+    ArrayTypeSymbol* byteArray = factory.Array(TYPE_BYTE);
+    SymbolBuilder<MethodSymbol> toArray = ns.AddMethod(
+        L"ToArray", byteArray, LINK_STATIC, ACS_PUBLIC);
+
+    TypeParameterSymbol* t = toArray.AddTypeParameter(L"T").Get();
+
+    toArray.AddParameter(L"value", t)
+           .SetCallback(&utils_toArray);
+}
+```
+
+  ShardScript usage:
+
+// app.shard
+```csharp
+using stdio;
+using utils;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    arr: int[] = utils.ToArray<int>(7);
+    println(arr[0]);   // 7
+}
+```
+
+  **Implementing an interface method.** The interface method symbol is captured so the class
+  method can declare itself as the concrete implementation.
+
+// logging.cpp
+```cpp
+static ObjectInstance* console_log(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    const wchar_t* message = context.Args[1]->AsString();
+
+    // Forward the message to the host console.
+    wprintf(L"%ls\\n", message);
+
+    return nullptr;
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> ns(context, L"logging");
+
+    SymbolBuilder<InterfaceSymbol> iLogger = ns.AddInterface(L"ILogger", ACS_PUBLIC);
+    MethodSymbol* logMethod = iLogger.AddMethod(L"Log", TYPE_VOID, LINK_INSTANCE, ACS_PUBLIC)
+                                    .AddParameter(L"message", TYPE_STRING)
+                                    .Get();
+    iLogger.DeclareGlobal();
+
+    ns.AddClass(L"ConsoleLogger", ACS_PUBLIC, LINK_INSTANCE, [&](SymbolBuilder<ClassSymbol> cls)
+    {
+        cls.Implements(iLogger.Get());
+
+        cls.AddMethod(L"Log", TYPE_VOID, LINK_INSTANCE, ACS_PUBLIC)
+           .AddParameter(L"message", TYPE_STRING)
+           .IsImplementationOf(logMethod)
+           .SetCallback(&console_log);
+    });
+}
+```
+
+  ShardScript usage:
+
+// app.shard
+```csharp
+using stdio;
+using logging;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    logger: ILogger = new ConsoleLogger();
+    logger.Log("Hello from the native logger");
+}
+```
+
+## See also
+
+  - [`library-building/class-symbol-builder`](/library-building/reference/class-symbol-builder) — registering classes.
+  - [`library-building/accessibility-and-linking`](/library-building/reference/accessibility-and-linking) — linking modes and accessibility.
+  - [`library-building/reading-arguments`](/library-building/how-to/reading-arguments) — reading arguments in callbacks.
+  - [`library-building/returning-values`](/library-building/how-to/returning-values) — returning values from callbacks.
+
+## Source
+
+  The native side of this API is implemented in `shard/semantic/SymbolBuilder.hpp`.
+  View the source on GitHub: `https://github.com/Rikitav/ShardScript/blob/main/ShardScript/include/shard/semantic/SymbolBuilder.hpp`.

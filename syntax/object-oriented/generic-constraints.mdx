@@ -1,0 +1,342 @@
+---
+title: Generic Constraints
+---
+
+## Summary
+
+  A `where` clause restricts a generic type parameter so
+  that only type arguments that satisfy the stated constraints can be used. The
+  constraint gives the compiler enough information to resolve member access,
+  method calls, and conversions on values of the constrained type parameter.
+
+## Syntax
+
+  A `where` clause is written immediately after the
+  type-parameter list. It names a type parameter, followed by a colon and one or
+  more constraint types separated by commas.
+
+| Construct | Syntax |
+| --- | ---
+| **Single constraint** | `{'where T : INameable'}` |
+| **Multiple constraints** | `{'where T : INameable, ICountable'}` |
+| **Class constraint** | `{'where T : Logger'}` |
+| **On a generic method** | `{'func Print<T>(item: T) -> void where T : INameable'}` |
+| **On a generic type** | `{'class Holder<T> where T : Logger'}` |
+
+## Parameters / Arguments
+
+  The `where` clause references a declared type parameter
+  and lists one or more types that the type argument must satisfy.
+
+  - **Type parameter** — The identifier declared by the generic type or method, for example  `T`. Each `where` clause names exactly one parameter. Multiple parameters require separate clauses.
+  - **Constraint type** — An interface, class, or struct type. The supplied type argument must implement the interface or be assignable to the class or struct.
+  - **Multiple constraints** — A single parameter can require several constraint types, separated by commas. The type argument must satisfy every constraint.
+
+## Returns
+
+  A `where` clause does not return a value. It produces a
+  compile-time requirement that is checked whenever the generic is instantiated
+  with explicit type arguments or when type arguments are inferred from a method
+  call.
+
+## Exceptions / Errors
+
+  - **Constraint violation** — Passing a type argument that does not implement the required interface or is not assignable to the required class or struct produces a compile error.
+  - **Unknown type parameter** — The identifier after `where` must name a type parameter declared on the same generic type or method.
+  - **Missing constraint type** — A colon with no constraint types after it is a syntax error; at least one constraint type is required.
+  - **Unsupported constraint kind** — Only interface, class, and struct types are valid constraint types. Special constraint keywords such as `class`,  `struct`, or `new()` are not supported.
+
+## Remarks
+
+  **Where clauses are allowed on many generic declarations.** You
+  can attach `where` clauses to classes, structs,
+  methods, operators, interfaces, and delegates that declare type parameters.
+  The clause appears after the closing `>` of the
+  type-parameter list.
+
+  **Constraint checking during instantiation.** When a generic type
+  is constructed with explicit type arguments, the compiler verifies that every
+  argument satisfies the constraints declared for the corresponding parameter.
+  The same check applies when a generic method is invoked with explicit type
+  arguments or when the compiler infers them from the call site.
+
+  **Constraint checking during type inference.** If a method call
+  omits type arguments, the inferred type must still satisfy every constraint.
+  Inference fails if no type argument that satisfies the constraints can be
+  determined from the supplied value arguments.
+
+  **Member access through a constrained parameter.** Once a type
+  parameter is constrained to an interface or class, member lookup can resolve
+  members of that constraint type on values whose declared type is the
+  constrained parameter. Without a constraint, member access on a value of type
+  `T` is rejected.
+
+  **Multiple constraints on one parameter.** Listing several
+  constraint types means the type argument must satisfy all of them. This is
+  useful when a generic algorithm needs several independent abstractions from a
+  single value.
+
+<Info title="Only type constraints are supported">
+ShardScript supports constraints that name a concrete interface, class, or
+  struct type. It does not support special constraint forms such as
+  `where T : class`,
+  `where T : struct`,
+  `where T : new()`, or recursive base-type constraints.
+</Info>
+
+## Examples
+
+  **Interface constraint on a method.**
+
+// generic_constraint_method.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public interface INameable
+{
+    func GetName() -> string;
+}
+
+public class Person : INameable
+{
+    public Name: string;
+
+    public func GetName() -> string
+    {
+        return this.Name;
+    }
+}
+
+public static func PrintName<T>(item: T) -> void where T : INameable
+{
+    // The compiler allows GetName because T is constrained to INameable.
+    println(item.GetName());
+}
+
+public static func Main() -> void
+{
+    person: Person = new Person();
+    person.Name = "alice";
+    PrintName<Person>(person);
+}
+```
+
+  **Multiple interface constraints.**
+
+// generic_multiple_constraints.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public interface INameable
+{
+    func GetName() -> string;
+}
+
+public interface ICountable
+{
+    func GetCount() -> int;
+}
+
+public class Counter : INameable, ICountable
+{
+    public Count: int;
+
+    public func GetName() -> string
+    {
+        return "counter";
+    }
+
+    public func GetCount() -> int
+    {
+        return this.Count;
+    }
+}
+
+public static func Describe<T>(item: T) -> string where T : INameable, ICountable
+{
+    return item.GetName() + ":" + item.GetCount().ToString();
+}
+
+public static func Main() -> void
+{
+    c: Counter = new Counter();
+    c.Count = 7;
+    println(Describe<Counter>(c));
+}
+```
+
+  **Class constraint on a method and on a generic type.**
+
+// generic_class_constraint.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Logger
+{
+    public func Log(message: string) -> void
+    {
+        println(message);
+    }
+}
+
+public static func WriteLog<T>(logger: T, message: string) -> void where T : Logger
+{
+    logger.Log(message);
+}
+
+public class Holder<T> where T : Logger
+{
+    public Item: T;
+
+    public func Use() -> void
+    {
+        this.Item.Log("held");
+    }
+}
+
+public static func Main() -> void
+{
+    logger: Logger = new Logger();
+    WriteLog<Logger>(logger, "direct");
+
+    holder: Holder<Logger> = new Holder<Logger>();
+    holder.Item = logger;
+    holder.Use();
+}
+```
+
+  **Constraint used with type inference.**
+
+// generic_inferred_constraints.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public interface INameable
+{
+    func GetName() -> string;
+}
+
+public class Person : INameable
+{
+    public Name: string;
+
+    public func GetName() -> string
+    {
+        return this.Name;
+    }
+}
+
+public static func PrintName<T>(item: T) -> void where T : INameable
+{
+    println(item.GetName());
+}
+
+public static func Main() -> void
+{
+    person: Person = new Person();
+    person.Name = "alice";
+
+    // T is inferred as Person; the constraint is still enforced.
+    PrintName(person);
+}
+```
+
+  **Constraint on a generic extension method.**
+
+// generic_extension_constraint.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public interface INameable
+{
+    func GetName() -> string;
+}
+
+public class Person : INameable
+{
+    public Name: string;
+
+    public func GetName() -> string
+    {
+        return this.Name;
+    }
+}
+
+public static func GetNameOrDefault<T>(value: T) -> string where T : INameable
+{
+    return value.GetName();
+}
+
+public static func Main() -> void
+{
+    person: Person = new Person();
+    person.Name = "bob";
+
+    println(person.GetNameOrDefault());
+    println(person.GetNameOrDefault<Person>());
+}
+```
+
+  **Common mistakes.**
+
+// generic_constraint_mistakes.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public interface INameable
+{
+    func GetName() -> string;
+}
+
+public class Person : INameable
+{
+    public Name: string;
+
+    public func GetName() -> string
+    {
+        return this.Name;
+    }
+}
+
+public class Counter
+
+
+public static func PrintName<T>(item: T) -> void where T : INameable
+{
+    println(item.GetName());
+}
+
+public static func Main() -> void
+{
+    person: Person = new Person();
+    PrintName<Person>(person);        // OK: Person implements INameable.
+
+    counter: Counter = new Counter();
+    // ERROR: Counter does not implement INameable.
+    // PrintName<Counter>(counter);
+}
+```
+
+## See also
+
+  - [`Generic Types`](/syntax/object-oriented/generics) — Declaring and instantiating generic classes, methods, and delegates.
+  - [`Interfaces and Abstractions`](/syntax/object-oriented/interfaces) — Defining the interface types that constraints typically reference.
+
+## Source
+
+  - Parser implementation:  ` ShardScript/src/parsing/SourceParser.cpp `
+  - Where-clause AST node:  ` ShardScript/include/shard/parsing/nodes/WhereClauseSyntax.hpp `
+  - Constraint binding and checking:  ` ShardScript/src/semantic/TypeBinder.cpp `
+  - Method-overload constraint checking:  ` ShardScript/src/semantic/ExpressionBinder.cpp `

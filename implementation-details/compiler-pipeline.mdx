@@ -1,0 +1,314 @@
+---
+title: Compiler Pipeline
+---
+
+## Summary
+
+  The ShardScript compiler transforms source text into a ready-to-run `ApplicationDomain`
+  through a fixed sequence of stages: lexing, parsing, semantic analysis, async lowering, layout, and
+  bytecode emission. Every compile-time error is reported before the program ever reaches the virtual
+  machine.
+
+## What problem it solves
+
+  A scripting language must balance fast iteration with early error detection. By compiling source ahead of
+  execution, ShardScript catches lexical, syntactic, and type errors before the host runs the program, while
+  still keeping the compiler lightweight enough to embed inside an application.
+
+## How it works
+
+  The `CompilationContext` owns each stage and threads a
+  `SemanticModel` — the resolved symbol and type information — through them. The final
+  product is an `ApplicationDomain`: a ready-to-run bundle handed to the host.
+
+// pipeline.txt
+```text
+Source text
+   |
+   v
+1. Lexer            -- tokens
+2. Parser           -- AST  (SyntaxTree)
+3. Semantic model   -- symbols, scopes, bound types   <-- all errors caught here
+4. Async lowering   -- async methods become state machines
+5. Layout           -- field/slot offsets assigned
+6. Emission         -- per-method bytecode + string pool
+   |
+   v
+ApplicationDomain  =  Program image  +  VirtualMachine  +  EventLoop  +  GarbageCollector
+   |
+   v
+7. VM::Run()        -- executes the entry point
+```
+
+  **Lexer.** The `LexicalAnalyzer` turns source text into a stream of tokens
+  in a `LexicalBuffer`, recognising hexadecimal, binary, and decimal prefixes, backtick
+  digit separators, and SI-style size suffixes.
+
+  **Parser.** The `SourceParser` is a hand-written recursive-descent parser
+  that consumes the token stream and builds a `SyntaxTree` of
+  `CompilationUnit` nodes — at this stage purely syntactic structure, with no meaning
+  yet attached.
+
+  **Semantic model.** The semantic analyzer (`Semanter.Analyze`) walks the
+  syntax tree in four ordered passes:
+
+| Pass | Component | Responsibility |
+| --- | --- | ---
+| 1. Declarations | DeclarationCollector | Register every declared type, method, field, and parameter into the SymbolTable. |
+| 2. Type binding | TypeBinder | Resolve type references (generics, base interfaces) to TypeSymbols. |
+| 3. Expression binding | ExpressionBinder | Bind each expression to its symbol and type; resolve overloads and member access. |
+| 4. Validation | SemanticValidator | Enforce the type rules and emit compile-time diagnostics. |
+| 5. Flow analysis | FlowAnalyzer | Verify definite assignment, reachable returns, and valid break/continue contexts. |
+
+  **Async lowering.** Before bytecode is emitted, `async` methods are
+  rewritten into compiler-generated state machines so that `await` can suspend and
+  resume without threads.
+
+  **Layout and emission.** `LayoutGenerator` assigns concrete offsets, and
+  the emitter produces a flat `ExecutableByteCode` stream plus a shared string pool.
+  The result is wrapped into a `ProgramVirtualImage` together with a fresh VM, event
+  loop, and garbage collector.
+
+## Key ideas
+
+  - **Errors are caught before execution.** Lexical, syntax, and type errors are all reported before stage 7 begins.
+  - **The semantic model is the source of truth.** All later stages read symbol and type information from the model rather than re-resolving names.
+  - **Async is lowered, not interpreted.** State machines are generated once at compile time, making suspension and resumption efficient at runtime.
+
+## When to use / When not to use
+
+| Use | Avoid |
+| --- | ---
+| Study the pipeline when debugging compilation errors or embedding the compiler. | Do not rely on undocumented stage ordering in external tools; the pipeline may evolve. |
+
+## Definite assignment and flow analysis
+
+  After type binding and validation, the compiler runs a flow-analysis pass that verifies every local
+  variable is assigned before it is read, every non-void method can return a value on every
+  execution path, and control-flow statements appear in valid lexical contexts. Violations are
+  reported as compile-time errors before bytecode is emitted.
+
+  There is no dedicated syntax for flow analysis; it is applied automatically to every method body,
+  constructor, property accessor, and lambda expression. The constructs the pass inspects use the
+  ordinary ShardScript statement and expression grammar.
+
+// flow_analysis_syntax.shard
+```csharp
+// Variable declaration without an initializer.
+name: Type;
+
+// Variable declaration with an initializer.
+name: Type = expression;
+
+// Simple assignment to a local variable.
+name = expression;
+
+// Function, accessor, or lambda with a non-void return type.
+func Name() -> Type
+{
+    return expression;
+}
+```
+
+  The pass operates on the body of every executable member. It tracks the set of local variables and
+  parameters that have been assigned, and it propagates control-flow state through statements.
+
+| Tracked entity | Initial state | Notes |
+| --- | --- | ---
+| Local variables | Unassigned | Declared with `name: Type;` and no initializer. |
+| Parameters | Assigned | Method, constructor, accessor, lambda, and catch-clause parameters are treated as assigned. |
+| Catch clause variables | Assigned | The exception variable declared in `catch (ex: Type)` is marked assigned. |
+| Control-flow state | Normal | One of Normal, Returns, Breaks, Continues, or Throws. |
+
+  A successful analysis emits no diagnostic; a failed analysis emits one or more compile-time errors
+  that prevent bytecode emission.
+
+  - **Use of unassigned local variable.** Reading a local variable before it has been assigned produces `Use of unassigned local variable 'name'`.
+  - **Unreachable code.** Statements that follow a terminal statement such as `return`, `throw`, an always-returning branch, or an always-throwing branch produce  `Unreachable code detected`.
+  - **Missing return value.** A non-void method, operator, accessor, or lambda whose body can reach the end without returning produces  `Method must return a value` or, when the return type is known,  `Method must return a value of type 'TypeName'`.
+  - **Break outside loop or switch.** A  `break` statement that is not lexically inside a loop or  `switch` produces `Break statement must be inside a loop or switch`.
+  - **Continue outside loop.** A  `continue` statement that is not lexically inside a loop produces  `Continue statement must be inside a loop`.
+
+  **Simple assignment tracking.** The analyzer marks a local variable assigned when it
+  sees a plain assignment expression such as `x = value;`. Compound assignment
+  operators are not tracked as definite assignments.
+
+  **Branch handling.** For `if` / `unless`
+  / `else` chains, the analyzer walks each branch in source order. Because
+  assignments are tracked with a single set, a variable assigned in any reachable branch is treated
+  as assigned after the conditional construct.
+
+  **Loops and switches.** The analyzer saves the assignment set before entering a loop
+  or `switch` and restores it afterward. Assignments made inside a loop body
+  or switch case are therefore not visible after the construct exits, which conservatively catches
+  variables that are only assigned on some iterations or cases.
+
+  **Try / catch.** Throws inside a `try` block are assumed to be
+  caught by the following `catch` clauses. The flow state of the
+  `try` block (with throws removed) is merged with the combined state of all
+  catch blocks.
+
+  **Break and continue.** Inside a loop or switch, `break` and
+  `continue` are consumed by the enclosing construct and do not propagate to
+  the caller. After the construct, the analyzer assumes Normal flow because the loop may execute
+  zero times.
+
+  **Async methods.** The missing-return check is skipped for async methods because the
+  state-machine rewrite changes how control reaches the caller.
+
+<Info>
+The analyzer intentionally does not perform full symbolic execution. It catches obvious mistakes
+  with a fast, single-pass walk, but it may not flag every theoretically unsafe program. Write
+  defensive code and initialize variables at the point of declaration when possible.
+</Info>
+
+  **Unassigned local variable.**
+
+// unassigned_variable.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    value: int;
+
+    // ERROR: Use of unassigned local variable 'value'
+    println(value);
+}
+```
+
+  **Assignment inside a loop is not visible after the loop.**
+
+// loop_assignment_not_visible.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    value: int;
+
+    while (true)
+    {
+        value = 42;
+        break;
+    }
+
+    // ERROR: Use of unassigned local variable 'value'
+    println(value);
+}
+```
+
+  **Missing return on one path.**
+
+// missing_return.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Sign(value: int) -> int
+{
+    if (value > 0)
+    {
+        return 1;
+    }
+
+    // ERROR: Method must return a value of type 'int'
+}
+```
+
+  **All paths return a value.**
+
+// all_paths_return.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Sign(value: int) -> int
+{
+    if (value > 0)
+    {
+        return 1;
+    }
+    else
+    {
+        return -1;
+    }
+}
+```
+
+  **Unreachable code after return.**
+
+// unreachable_code.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    println("before");
+    return;
+
+    // ERROR: Unreachable code detected
+    println("after");
+}
+```
+
+  **Break and continue in valid contexts.**
+
+// valid_break_continue.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    counter: int = 0;
+
+    while (counter < 10)
+    {
+        counter = counter + 1;
+
+        if (counter == 5)
+        {
+            continue;
+        }
+
+        if (counter == 8)
+        {
+            break;
+        }
+    }
+
+    println("done");
+}
+```
+
+  **Break outside a loop or switch.**
+
+// break_outside_loop.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // ERROR: Break statement must be inside a loop or switch
+    break;
+}
+```
+
+## Related articles
+
+  - `Bytecode and OpCodes` — the output of the emission stage.
+  - `Virtual Machine Internals` — how the compiled image is executed.
+  - `Event Loop and libuv` — how async work is scheduled after compilation.
+  - `Runtime Architecture` — the high-level view of compiler, VM, and event loop.

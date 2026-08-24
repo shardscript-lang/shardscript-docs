@@ -1,0 +1,27 @@
+---
+title: "ShardScript"
+description: "Documentation for the ShardScript language, runtime, and native library SDK."
+---
+
+ShardScript is a custom embedded programming language and virtual machine designed for host applications that need a safe, sandboxed scripting layer with C-style syntax and modern conveniences such as generics, async/await, and native interop.
+
+Use the guides below to install the toolchain, learn the language, explore the standard library, and build native `.shard.cpp` libraries that extend the VM.
+
+<CardGroup cols={2}>
+  <Card title="Getting Started" icon="rocket" href="/getting-started/02-installation">
+    Install ShardScript, write a Hello World program, and learn how the runtime is organized.
+  </Card>
+  <Card title="Language Syntax" icon="code" href="/syntax/fundamentals/01-variables-and-types">
+    Variables, types, control flow, classes, generics, lambdas, async, and memory model.
+  </Card>
+  <Card title="Standard Library" icon="book-open" href="/stdlib/constream/console-io">
+    Console I/O, math, collections, streams, filesystem, JSON, HTTP, sockets, and more.
+  </Card>
+  <Card title="Library Building" icon="puzzle-piece" href="/library-building/concepts/native-library-overview">
+    Build native libraries, register symbols, and bridge C++ code into ShardScript.
+  </Card>
+</CardGroup>
+
+<Tip>
+  Looking for the language or runtime source code? Visit the [ShardScript repository on GitHub](https://github.com/Rikitav/ShardScript).
+</Tip>

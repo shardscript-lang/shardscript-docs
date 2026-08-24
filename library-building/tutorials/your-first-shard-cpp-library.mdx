@@ -1,0 +1,227 @@
+---
+title: Your First Native Library
+---
+
+This tutorial walks through building a minimal native C++ library for the ShardScript runtime as a
+  completely separate project. By the end you will have a compiled shared library —
+  `my_shard_library` — in its own directory `my-shard-library`,
+  exposing a static class `MyType` with a `DoWork` method,
+  and a ShardScript program that calls it.
+
+## Prerequisites
+
+  - A working C++20 toolchain and CMake 3.20 or later.
+  - A pre-built ShardScript runtime shared library and its headers. The headers are in  `ShardScript/include` and the runtime binary is next to the interpreter.
+  - The `shard` interpreter available on your PATH or in your ShardScript build output directory.
+  - Basic familiarity with ShardScript namespaces, classes, and methods.
+
+## Scenario
+
+  You want to extend the runtime with a small native library built outside the ShardScript
+  repository. The library will contain two C++ source files: one that holds the callback bodies and
+  one that registers the metadata and symbols. You will build a shared library manually with CMake,
+  then load it from a ShardScript program using the `-l` flag.
+
+## Step-by-Step Instructions
+
+  **1. Create the project directory.**
+
+  Make a new directory anywhere on your filesystem. This tutorial uses
+  `my-shard-library/` next to the ShardScript repository.
+
+```bash
+mkdir my-shard-library
+cd my-shard-library
+```
+
+| Path | Purpose |
+| --- | ---
+| my-shard-library/CMakeLists.txt | CMake build script that produces the shared library. |
+| my-shard-library/callbacks.cpp | Callback bodies that run when ShardScript invokes the library. |
+| my-shard-library/library.cpp | Library metadata and symbol registration. |
+| my-shard-library/app.shard | ShardScript program that consumes the library. |
+
+  **2. Write the callback bodies.**
+
+  Open `callbacks.cpp` and include the ShardScript runtime headers. The
+  callback reads the integer argument, doubles it, and returns the result through the garbage
+  collector. Keeping callbacks in a separate file is not required, but it mirrors how larger native
+  libraries organize implementation code away from registration code.
+
+// callbacks.cpp
+```cpp
+#include <shard/ShardScriptLIB.hpp>
+#include <shard/runtime/ObjectInstance.hpp>
+#include <shard/runtime/MethodCallState.hpp>
+
+using namespace shard;
+
+ObjectInstance* MyLibrary_DoWork(const CallState& context)
+{
+    // Instance methods receive 'this' as Args[0]; for a static method the first
+    // argument is the first real parameter passed from ShardScript.
+    std::int64_t value = context.Args[0]->AsInteger();
+
+    // The tutorial example simply doubles the input so the result is easy to verify.
+    std::int64_t result = value * 2;
+
+    return context.Collector.FromValue(result);
+}
+```
+
+  **3. Register the library metadata and symbols.**
+
+  Create `library.cpp`. Include the ShardScript authoring headers,
+  forward-declare the callback defined in `callbacks.cpp`, then use
+  `SHARDLIB_GETMETADATA` to describe the library and
+  `SHARDLIB_ENTRYPOINT` to register the namespace, class, and method.
+
+// library.cpp
+```cpp
+#include <shard/ShardScriptLIB.hpp>
+#include <shard/CompilationContext.hpp>
+#include <shard/semantic/SymbolBuilder.hpp>
+
+using namespace shard;
+
+// Callbacks defined in callbacks.cpp.
+ObjectInstance* MyLibrary_DoWork(const CallState& context);
+
+SHARDLIB_GETMETADATA
+{
+    lib.Name        = L"shard.mylibrary";
+    lib.Description = L"A minimal native shard library";
+    lib.Version     = L"1.0.0";
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> myNamespace(context, L"mylibrary");
+
+    // Register a static class so it can be called through the type name.
+    myNamespace.AddClass(L"MyType", ACS_PUBLIC, LINK_STATIC, [](SymbolBuilder<ClassSymbol> type)
+    {
+        type.AddMethod(L"DoWork", TYPE_INT, LINK_STATIC)
+            .AddParameter(L"value", TYPE_INT)
+            .SetCallback(&MyLibrary_DoWork);
+    });
+}
+```
+
+<Info title="Why LINK_STATIC for the class">
+A class registered with `LINK_STATIC` behaves like a static class in
+  ShardScript: it cannot be instantiated and its members are reached through the type name. This
+  matches the tutorial call site `MyType.DoWork(7)`.
+</Info>
+
+  **4. Add a CMake build script.**
+
+  The CMakeLists.txt is a normal shared-library target. It points to the ShardScript include
+  directory and links the pre-built ShardScript runtime library. Adjust the library and include
+  paths to match where you built or installed ShardScript.
+
+// CMakeLists.txt
+```cmake
+cmake_minimum_required(VERSION 3.20)
+project(MyShardLibrary CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Path to the ShardScript checkout or installation.
+set(SHARDSCRIPT_ROOT "\${CMAKE_CURRENT_SOURCE_DIR}/../ShardScript"
+    CACHE PATH "Root of the ShardScript repository or install prefix")
+
+# ShardScript runtime library location.
+find_library(SHARDSCRIPT_LIB
+    NAMES ShardScript libShardScript
+    PATHS "\${SHARDSCRIPT_ROOT}/build/bin" "\${SHARDSCRIPT_ROOT}/lib"
+    NO_DEFAULT_PATH
+    REQUIRED
+)
+
+add_library(my_shard_library SHARED
+    library.cpp
+    callbacks.cpp
+)
+
+set_target_properties(my_shard_library PROPERTIES
+    WINDOWS_EXPORT_ALL_SYMBOLS ON
+)
+
+target_include_directories(my_shard_library PRIVATE "\${SHARDSCRIPT_ROOT}/ShardScript/include")
+target_link_libraries(my_shard_library PRIVATE \${SHARDSCRIPT_LIB})
+```
+
+  **5. Build the library.**
+
+  Configure and build from the project directory.
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+```
+
+  The build emits a shared library in the `build/` directory:
+
+  - On Windows: `build/my_shard_library.dll`
+  - On Linux: `build/libmy_shard_library.so`
+  - On macOS: `build/libmy_shard_library.dylib`
+
+  **6. Write a ShardScript program that consumes the library.**
+
+  Create `app.shard` in the project directory. Import the
+  `mylibrary` namespace and call the static method.
+
+// app.shard
+```csharp
+using stdio;
+using mylibrary;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    result: int = MyType.DoWork(7);
+    println("Result: " + result);
+}
+```
+
+  **7. Run the program and load the shard explicitly.**
+
+  The interpreter does not auto-load shards that live outside its own system directory, so pass the
+  compiled shared library with the `-l` flag.
+
+```bash
+# Windows
+shard app.shard -l build/my_shard_library.dll
+
+# Linux
+shard app.shard -l build/libmy_shard_library.so
+
+# macOS
+shard app.shard -l build/libmy_shard_library.dylib
+```
+
+## Expected Output
+
+  When the program runs, the native callback receives `7`, doubles it, and the
+  managed program prints:
+
+```text
+Result: 14
+```
+
+<Tip title="Success criteria">
+If you see `Result: 14`, the library compiled correctly, the runtime loaded
+  it, and the method registration resolved the `MyType.DoWork` symbol.
+</Tip>
+
+## What's next?
+
+  - Add instance fields and a constructor by switching the class to  `LINK_INSTANCE` and calling `AddInit()`.
+  - Expose read-only values as static properties with `AddProperty` and a getter callback.
+  - Declare dependencies in `SHARDLIB_GETMETADATA` when your library relies on other shards.
+  - Learn how arguments move between ShardScript and C++ in  `library-building/reading-arguments`.
+  - Follow the full build setup guide in `library-building/library-build-setup`.
+  - Explore the framework source libraries such as  `system/math.shard.cpp` for simple static methods and  `system/collections.shard.cpp` for generic types.

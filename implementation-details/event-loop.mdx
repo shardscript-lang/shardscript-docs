@@ -1,0 +1,74 @@
+---
+title: Event Loop and libuv
+---
+
+## Summary
+
+  ShardScript concurrency is cooperative and single-threaded. A single `EventLoop` — a
+  thin wrapper around a libuv `uv_loop_t` — multiplexes all in-flight asynchronous work:
+  timers, socket and HTTP I/O, and thread-pool offloads.
+
+## What problem it solves
+
+  Multi-threaded parallelism is powerful but complicates memory safety and synchronization. ShardScript avoids
+  OS threads in script code by using a single event loop. Async methods suspend on `await`,
+  return control to the loop, and resume when their operation completes, all on the same thread where VM state
+  is safe.
+
+## How it works
+
+  No async operation spawns a dedicated OS thread per task. Instead each registers a handle with the loop and
+  a continuation to run on completion.
+
+  **Timers.** `Task.Delay` is the canonical example. In the async shard it
+  calls the native helper `AsyncScope::Delay`, which creates a libuv timer, arms it, and
+  registers a completion callback.
+
+// task_delay.cpp
+```cpp
+// Native helper behind Task.Delay(ms)
+uv_timer_t* timer = new uv_timer_t;
+uv_timer_init(loop, timer);
+
+uv_timer_start(timer, [](uv_timer_t* handle) {
+    // ...complete the task, which resumes the suspended awaiter...
+    // ...then close and free the timer handle...
+}, milliseconds, 0);
+```
+
+  When the timer fires, the callback completes the task, which resumes the suspended async method.
+
+  **Suspending and resuming.** An async method does not block its caller; it suspends at each
+  `await` and returns control to the loop. Two ways to make progress exist:
+
+  - **Blocking wait** — `Task.Wait` pumps the loop until the awaited task completes, then reads its result.
+  - **Fire-and-forget** — calling an async method without awaiting starts it concurrently. The loop keeps it alive as long as needed.
+
+  Resumption mirrors suspension. When a libuv callback completes a pending operation, the runtime calls
+  `ResumeContinuation`: it reads the continuation off the task, finds the state
+  machine&apos;s `MoveNext` method, and invokes it. In-flight tasks are rooted so the
+  collector cannot reclaim them while they are suspended.
+
+  **Offloading CPU-bound work.** Because everything shares one thread, long CPU-bound work would
+  starve the loop. `RunOnThreadPool` runs heavy work on a background
+  `std::thread` and marshals completion back through a libuv
+  `uv_async_t`, so the resume happens on the single thread where VM state is safe to
+  touch.
+
+## Key ideas
+
+  - **Single-threaded concurrency.** All script code runs on one thread; the loop interleaves async operations.
+  - **No data races in script code.** Because there is no shared mutable state between OS threads, race conditions are avoided by design.
+  - **libuv as the backbone.** Timers, sockets, and async handles are all managed by libuv.
+
+## When to use / When not to use
+
+| Use | Avoid |
+| --- | ---
+| Use async/await for I/O-bound and timer-based concurrency. | Do not use async/await for CPU-bound parallelism; offload heavy work to the thread pool or native libraries. |
+
+## Related articles
+
+  - `Compiler Pipeline` — how async methods are lowered into state machines.
+  - `Virtual Machine Internals` — how the VM executes the state machines resumed by the loop.
+  - `Runtime Architecture` — the high-level integration of compiler, VM, and event loop.

@@ -1,0 +1,324 @@
+---
+title: Conditionals
+---
+
+## Summary
+
+  ShardScript conditional statements branch execution based on a boolean condition.
+  The language provides `if`, `else if`,
+  `else`, and `unless` statement forms,
+  plus an expression-oriented `if` form for value selection.
+
+## Syntax
+
+Statement form — condition must be parenthesized:
+
+// conditionals_syntax.shard
+```csharp
+if (condition)
+    statement;
+
+if (condition)
+{
+    statement;
+    statement;
+}
+
+if (condition)
+    statement;
+else if (condition)
+    statement;
+else
+    statement;
+
+unless (condition)
+    statement;
+
+unless (condition)
+    statement;
+else
+    statement;
+```
+
+Expression form — parentheses around the condition are optional:
+
+// if_expression_syntax.shard
+```csharp
+value := if (condition) thenExpression else elseExpression;
+value := if condition thenExpression else elseExpression;
+```
+
+## Parameters / Arguments
+
+| Element | Required | Type | Description |
+| --- | --- | --- | ---
+| `condition` | yes | bool | The boolean expression that selects which branch runs. |
+| `statement` | yes (per branch) | statement or block | The body executed when the clause matches. |
+| `thenExpression` | yes (expression form) | expression | Value produced when the condition is true. |
+| `elseExpression` | yes (expression form) | expression | Value produced when the condition is false. |
+
+  **Clause behavior:**
+
+  - `if` runs its body when the condition evaluates to `true`.
+  - `unless` runs its body when the condition evaluates to `false`.
+  - `else if` and `else unless` are evaluated in order only when every preceding clause failed to match.
+  - A trailing `else` runs only when no previous clause matched.
+
+## Returns
+
+| Form | Returns |
+| --- | ---
+| Statement form | Nothing. Control flow continues after the conditional. |
+| Expression form | The value of the selected branch expression. Both branches must produce compatible types. |
+
+## Exceptions / Errors
+
+  - **Non-boolean condition** — The condition of  `if` and `unless` must be `bool`. Passing an `int`, `string`, or other type fails semantic analysis with a type-mismatch error.
+  - **Missing parentheses (statement form)** — Writing  `if true` instead of `if (true)` in a statement produces a parser error; the statement form requires parentheses.
+  - **Empty body** — A bare semicolon after the condition (`if (true);`) is rejected. Use an empty block ` `  if a no-op branch is intentional.
+  - **Dangling else** — Each `else`  binds to the nearest preceding `if` or `unless` in the same block. Use explicit braces to override the default binding.
+  - **Type mismatch (expression form)** — The then and else branches of an `if` expression must yield the same type.
+
+## Remarks
+
+  **Statement bodies.** A conditional clause accepts either a single statement or a
+  braced block. ShardScript does not require braces for a single statement, but braces are mandatory
+  for more than one statement. The documentation style used in this project recommends explicit
+  braces in all production code for clarity and to reduce dangling-else mistakes.
+
+  **Unless semantics.** `unless (condition)` is equivalent to
+  `if (!condition)`. The keyword form reads naturally for guard clauses and
+  early-exit checks. An `else` after `unless` runs when
+  the condition is `true`.
+
+  **Chaining clauses.** After `else` the parser accepts another
+  `if`, another `unless`, or a final block. This allows
+  mixed chains such as `if ... else unless ... else`.
+
+  **Boolean-only conditions.** There is no truthy/falsy coercion. Numeric zero, empty
+  strings, and `null` references do *not* act as false. The condition
+  must be an expression that the compiler resolves to `bool`.
+
+  **VM lowering.** A statement conditional compiles to a `jmpf`
+  (jump-if-false) for `if` or `jmpt` (jump-if-true) for
+  `unless`, followed by unconditional `jmp` instructions
+  that skip the remaining clauses once a branch is taken. The condition value is popped from the
+  evaluation stack before the branch body executes.
+
+<Warning title="Expression form status">
+The parser and semantic binder recognize `if` as an expression, but the
+  synchronous bytecode emitter does not yet implement it. Until that work is complete, use the
+  ternary conditional operator (`condition ? thenValue : elseValue`) for
+  value selection in synchronous code, or fall back to an `if` statement with
+  a pre-declared variable.
+</Warning>
+
+## Examples
+
+  **Basic if/else if/else chain.**
+
+// grade_conditionals.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    score: int = 85;
+
+    if (score >= 90)
+    {
+        println("A");
+    }
+    else if (score >= 80)
+    {
+        println("B");
+    }
+    else if (score >= 70)
+    {
+        println("C");
+    }
+    else
+    {
+        println("F");
+    }
+}
+```
+
+  **unless for inverted logic.**
+
+// unless_inverted.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    ready: bool = false;
+
+    unless (ready)
+    {
+        println("still loading");
+    }
+    else
+    {
+        println("ready");
+    }
+}
+```
+
+  **Single-statement bodies.**
+
+// single_statement.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    value: int = 7;
+
+    if (value > 0)
+        println("positive");
+    else if (value < 0)
+        println("negative");
+    else
+        println("zero");
+}
+```
+
+  **Boolean-only condition enforcement.**
+
+// boolean_condition.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    count: int = 5;
+
+    // Correct: the comparison produces bool.
+    if (count > 0)
+    {
+        println("has items");
+    }
+
+    // Incorrect and will not compile:
+    // if (count) { println("has items"); }
+    // Error: condition must be boolean, got 'int'
+}
+```
+
+  **Value selection with the ternary operator.**
+
+// ternary_value_selection.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    value: int = -4;
+
+    // Ternary ? : is fully emitted and works today.
+    sign: int = value >= 0 ? 1 : -1;
+    label: string = value > 10 ? "big" : "small";
+
+    println(sign);    // -1
+    println(label);   // small
+}
+```
+
+  **Equivalent logic without the expression form.**
+
+// statement_equivalent.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    value: int = 7;
+    sign: int = 0;
+
+    // Use a statement and a pre-declared variable when the expression
+    // form is unavailable or when both branches are too large for a
+    // single expression.
+    if (value >= 0)
+    {
+        sign = 1;
+    }
+    else
+    {
+        sign = -1;
+    }
+
+    println(sign);    // 1
+}
+```
+
+  **Nested conditionals and explicit braces.**
+
+// nested_conditionals.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    a: bool = true;
+    b: bool = false;
+
+    if (a)
+    {
+        if (b)
+        {
+            println("a and b");
+        }
+        else
+        {
+            println("a only");
+        }
+    }
+    else
+    {
+        println("neither");
+    }
+}
+```
+
+  **Mixed else-if / else-unless chain.**
+
+// mixed_chain.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    mode: string = "silent";
+    enabled: bool = true;
+
+    if (mode == "verbose")
+    {
+        println("full output");
+    }
+    else unless (enabled)
+    {
+        println("disabled");
+    }
+    else
+    {
+        println("normal");
+    }
+}
+```

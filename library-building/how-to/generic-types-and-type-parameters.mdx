@@ -1,0 +1,309 @@
+---
+title: Generic Types & Type Parameters
+---
+
+This how-to guide shows how to register a generic class from a native C++ ShardScript library. You
+  will create a raw generic class symbol, add a `TypeParameterSymbol`, use
+  `SymbolFactory::GenericType` to describe constructed generic types, read runtime
+  type arguments from `context.Frame->TypeArguments`, and allocate concrete
+  instances with `AllocateGeneric`. The guide is built as a standalone shared
+  library, because any shared library that exports
+  `ShardLib_GetMetadata` and `ShardLib_EntryPoint` can be a
+  ShardScript native library, no matter how many source files it contains or where it lives.
+
+## Prerequisites
+
+  - A working C++20 toolchain and CMake 3.20 or later.
+  - The ShardScript runtime shared library and headers from  `ShardScript/include`.
+  - A ShardScript interpreter that can load a shared library with the `-l` flag.
+  - Familiarity with registering classes, fields, methods, and constructors through  `SymbolBuilder<ClassSymbol>`.
+
+## Goal
+
+  Implement a generic `Container<T>` class in C++ that stores one value of
+  type `T`, exposes `GetValue` and
+  `SetValue`, and can clone itself into a new
+  `Container<T>`. The clone callback must know the concrete type argument at
+  runtime so it can allocate the correct constructed generic instance.
+
+## Step-by-Step Instructions
+
+  **1. Create a standalone project directory.**
+
+  A native library is a normal shared library. It can be one file or many, and it can live anywhere on
+  disk. This example uses a single `container.shard.cpp` file plus a CMake build
+  script in a separate directory.
+
+```bash
+mkdir generic-container-library
+cd generic-container-library
+```
+
+  **2. Add a CMake build script.**
+
+  The script builds a shared library the same way any other C++ project would. It points the include
+  path at `ShardScript/include` and links the ShardScript runtime shared library.
+
+// CMakeLists.txt
+```cmake
+cmake_minimum_required(VERSION 3.20)
+project(GenericContainer CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+set(SHARDSCRIPT_ROOT "\${CMAKE_CURRENT_SOURCE_DIR}/../ShardScript"
+    CACHE PATH "Root of the ShardScript checkout or install prefix")
+
+find_library(SHARDSCRIPT_LIB
+    NAMES ShardScript libShardScript
+    PATHS "\${SHARDSCRIPT_ROOT}/build/bin" "\${SHARDSCRIPT_ROOT}/lib"
+    NO_DEFAULT_PATH
+    REQUIRED
+)
+
+add_library(generic_container SHARED container.shard.cpp)
+
+set_target_properties(generic_container PROPERTIES
+    WINDOWS_EXPORT_ALL_SYMBOLS ON
+)
+
+target_include_directories(generic_container PRIVATE "\${SHARDSCRIPT_ROOT}/ShardScript/include")
+target_link_libraries(generic_container PRIVATE \${SHARDSCRIPT_LIB})
+```
+
+  **3. Include the generic-registration headers.**
+
+  In addition to the usual authoring headers, include the symbol factory and generic-type symbol headers
+  so you can build `Container<T>` and
+  `T[]`-shaped types at registration time.
+
+// container.shard.cpp
+```cpp
+#include <ShardScript.hpp>
+#include <shard/semantic/SymbolFactory.hpp>
+#include <shard/semantic/symbols/GenericTypeSymbol.hpp>
+
+using namespace shard;
+```
+
+  **4. Declare raw symbol placeholders.**
+
+  Store the raw generic class symbol, its type parameter, and any fields you need to access inside
+  callbacks. The raw class symbol is the generic definition; the concrete type arguments are supplied at
+  runtime.
+
+// container.shard.cpp
+```cpp
+static ClassSymbol* containerClass_raw = nullptr;
+static TypeParameterSymbol* container_T = nullptr;
+static FieldSymbol* container_valueField = nullptr;
+```
+
+  **5. Register the generic class and its type parameter.**
+
+  Call `AddClass` to create the raw class definition, then call
+  `AddTypeParameter(L&quot;T&quot;)`. The returned
+  `TypeParameterSymbol*` is a placeholder you can use for field types, parameter
+  types, and return types during registration.
+
+// container.shard.cpp
+```cpp
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> ns(context, L"genericsdemo");
+    SymbolFactory factory(context.GetSemanticModel().Table.get());
+
+    SymbolBuilder<ClassSymbol> containerClass = ns.AddClass(L"Container", ACS_PUBLIC, LINK_INSTANCE);
+
+    container_T = containerClass.AddTypeParameter(L"T");
+    containerClass_raw = containerClass.Get();
+
+    // Registration continues in the next steps.
+}
+```
+
+  **6. Use the type parameter for fields, parameters, and constructed return types.**
+
+  Fields and method parameters can directly use `container_T`. To express a return
+  type of `Container<T>`, call
+  `SymbolFactory::GenericType` with the raw class symbol and a mapping from the
+  parameter name to the `TypeParameterSymbol`. For the standard
+  `IEnumerable<T>` interface, use
+  `SymbolFactory::EnumerableOf(elementType)` instead of constructing it manually.
+
+// container.shard.cpp
+```cpp
+    container_valueField = containerClass
+        .AddField(L"_value", container_T, LINK_INSTANCE, ACS_PRIVATE)
+        .Get();
+
+    containerClass.AddInit()
+        .AddParameter(L"value", container_T)
+        .SetCallback(&container_init);
+
+    containerClass.AddMethod(L"GetValue", container_T, LINK_INSTANCE, ACS_PUBLIC)
+        .SetCallback(&container_GetValue);
+
+    containerClass.AddMethod(L"SetValue", TYPE_VOID, LINK_INSTANCE, ACS_PUBLIC)
+        .AddParameter(L"value", container_T)
+        .SetCallback(&container_SetValue);
+
+    GenericTypeSymbol* containerOfT = factory.GenericType(
+        containerClass_raw,
+        { { L"T", container_T } });
+
+    containerClass.AddMethod(L"Clone", containerOfT, LINK_INSTANCE, ACS_PUBLIC)
+        .SetCallback(&container_Clone);
+}
+```
+
+  **7. Implement callbacks that read runtime type arguments.**
+
+  Inside a generic method, `context.Frame->TypeArguments` holds the concrete
+  substitutions in the same order as the `AddTypeParameter` calls. For
+  `Container<int>`, index `0` is the integer type
+  symbol. Use it to allocate arrays or other generic instances whose element type matches the caller's
+  type argument.
+
+// container.shard.cpp
+```cpp
+static ObjectInstance* container_init(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    ObjectInstance* value = context.Args[1];
+
+    self->SetField(container_valueField->SlotIndex, value);
+
+    return self;
+}
+
+static ObjectInstance* container_GetValue(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+
+    return self->GetField(container_valueField->SlotIndex);
+}
+
+static ObjectInstance* container_SetValue(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    ObjectInstance* value = context.Args[1];
+
+    self->SetField(container_valueField->SlotIndex, value);
+
+    return nullptr;
+}
+
+static ObjectInstance* container_Clone(const CallState& context)
+{
+    ObjectInstance* self = context.Args[0];
+    ObjectInstance* value = self->GetField(container_valueField->SlotIndex);
+
+    TypeSymbol* concreteT = context.Frame->TypeArguments[0];
+    ObjectInstance* clone = context.Collector.AllocateGeneric(containerClass_raw, { concreteT });
+
+    clone->SetField(container_valueField->SlotIndex, value);
+
+    return clone;
+}
+```
+
+<Info>
+Always index `TypeArguments` in the same order as the type parameters were
+  registered. For `Dictionary<K, V>`, index `0` is K
+  and index `1` is V.
+</Info>
+
+  **8. Add library metadata.**
+
+  Every native library must export `ShardLib_GetMetadata`. Declare the library name,
+  description, and version so the runtime loader can identify and load it.
+
+// container.shard.cpp
+```cpp
+SHARDLIB_GETMETADATA
+{
+    lib.Name = L"shard.genericsdemo";
+    lib.Description = L"How-To demo for generic native types.";
+    lib.Version = L"1.0.0";
+}
+```
+
+  **9. Build the shared library.**
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+```
+
+  The build emits a platform-specific shared library in `build/`:
+
+  - Windows: `build/generic_container.dll`
+  - Linux: `build/libgeneric_container.so`
+  - macOS: `build/libgeneric_container.dylib`
+
+## Verification
+
+  Write a ShardScript program that constructs, reads, and clones the generic container. If the type
+  parameter flows correctly through registration and runtime allocation, both containers hold the same
+  value and the clone has the same concrete type as the original.
+
+// app.shard
+```csharp
+using stdio;
+using genericsdemo;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    first: Container<int> = new Container<int>(42);
+    second: Container<int> = first.Clone();
+
+    println(first.GetValue());   // 42
+    println(second.GetValue());  // 42
+
+    second.SetValue(99);
+
+    println(first.GetValue());   // 42
+    println(second.GetValue());  // 99
+}
+```
+
+  Run the program with the `-l` flag pointing at the shared library you built:
+
+```bash
+# Windows
+shard app.shard -l build/generic_container.dll
+
+# Linux
+shard app.shard -l build/libgeneric_container.so
+
+# macOS
+shard app.shard -l build/libgeneric_container.dylib
+```
+
+  Expected output:
+
+```text
+42
+42
+42
+99
+```
+
+## Troubleshooting
+
+  - **Type argument index is wrong.** If  `context.Frame->TypeArguments[0]` returns the wrong concrete type, verify that you read the arguments in the same order as the `AddTypeParameter` calls. For multi-parameter generics such as `Dictionary<K, V>`, K is index 0 and V is index 1.
+  - **Clone returns a raw generic definition.** Use  `AllocateGeneric(containerClass_raw, { concreteT })`, not  `AllocateInstance(containerClass_raw)`. The latter creates an instance of the raw definition and loses the caller's concrete type argument.
+  - **Field type does not match the type argument.** Register generic fields with the `TypeParameterSymbol` placeholder, not with a concrete type. If you register the field as `TYPE_INT`, every constructed instance of the generic class will still treat the field as `int`.
+  - **Generic interface implementation fails.** When a class implements `IWrapper<T>`, construct the interface type with  `{'factory.GenericType(wrapperInterface_raw, { { L"T", container_T } })'}` so the interface's type parameter is mapped to the class's type parameter.
+  - **Callback is not invoked.** Confirm that every method has a matching `.SetCallback(...)` call and that the linking mode matches the call site. Instance methods on a generic class are still invoked through an instance and receive  `this` as `context.Args[0]`.
+
+## See also
+
+  - `library-building/example-generic-collections` — generic collections example.
+  - `library-building/inter-library-dependencies` — cross-library generic construction.
+  - `library-building/reflection-style-lookups` — reflection-style symbol lookups.
+  - `library-building/class-symbol-builder` — registering generic classes.

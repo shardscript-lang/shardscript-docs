@@ -1,0 +1,351 @@
+---
+title: 'Dictionary<K, V>'
+---
+
+## Summary
+
+  `Dictionary<K, V>` is a generic hash table that maps unique keys of type
+  `K` to values of type `V`. It supports insertion, lookup by key,
+  removal, enumeration over `KeyValuePair<K, V>` entries via the
+  `IEnumerable<T>` contract, and an `Entry` API for in-place
+  lookup and mutation inspired by Rust&apos;s hash map entry methods.
+
+## Syntax
+
+  A dictionary is created with `new Dictionary<K, V>()`. Keys and values are accessed
+  through the indexer, and the public API is expressed as follows:
+
+// dictionary_syntax.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // Explicit generic instantiation.
+    ages: Dictionary<string, int> = new Dictionary<string, int>();
+
+    // Add fails if the key already exists.
+    ages.Add("alice", 30);
+    ages.Add("bob", 25);
+
+    // Indexer get/set: setter inserts or overwrites; getter throws on a missing key.
+    println(ages["alice"]);
+    ages["bob"] = 26;
+
+    // Membership test without exceptions.
+    if (ages.ContainsKey("carol"))
+    {
+        println(ages["carol"]);
+    }
+
+    // Entry API: insert-or-retrieve in a single operation.
+    existing: int = ages.Entry("dave").OrInsert(40);
+    println(existing);
+}
+```
+
+## Parameters / Arguments
+
+| Member | Parameters | Description |
+| --- | --- | ---
+| `new Dictionary<K, V>()` | — | Creates an empty dictionary. Internal storage is allocated lazily on the first insertion. |
+| `Count` | — | Read-only property returning the number of active key-value pairs. |
+| `Keys` | — | Read-only property returning a new K[] snapshot of all active keys. |
+| `Values` | — | Read-only property returning a new V[] snapshot of all active values. |
+| `this[key]` | `key`: K | Indexer getter returns the value for an existing key; setter inserts or updates. |
+| `Add(key, value)` | `key`: K, `value`: V | Inserts a new key-value pair. Throws if the key is already present. |
+| `ContainsKey(key)` | `key`: K | Returns true if the key exists, false otherwise. Never throws. |
+| `Remove(key)` | `key`: K | Removes the key if it exists and returns true; otherwise returns false. |
+| `Clear()` | — | Removes every entry by replacing the internal arrays with zero-length arrays. |
+| `GetEnumerator()` | — | Returns a `DictionaryEnumerator<K, V>` positioned before the first entry. |
+| `Entry(key)` | `key`: K | Returns an `Entry<K, V>` view into the dictionary at the requested key, occupied or not. |
+| `Entry.OrInsert(value)` | `value`: V | Inserts the value if the key is vacant and returns the stored value; otherwise returns the existing value. |
+| `Entry.OrInsertWith(factory)` | factory: Factory&lt;V&gt; | Like OrInsert, but calls the factory delegate only when the key is vacant. |
+| `Entry.OrDefault()` | — | Inserts the default value for V if the key is vacant and returns it; otherwise returns the existing value. |
+| `Entry.AndModify(modifier)` | modifier: Modifier&lt;V&gt; | If the key is occupied, replaces the value with modifier(value); returns the same Entry for chaining. |
+
+  The `collections` namespace also provides two generic delegate types used by the
+  Entry API:
+
+| Delegate | Signature | Purpose |
+| --- | --- | ---
+| `Factory<T>` | `() -> T` | A parameterless factory that produces a value of type T. |
+| `Modifier<T>` | `(value: T) -> T` | A transformation that receives a value of type T and returns a value of type T. |
+
+## Returns
+
+| Member | Return Type | Meaning |
+| --- | --- | ---
+| `Count` | int | The current number of occupied slots. |
+| `Keys` | K[] | A newly allocated array containing every active key. |
+| `Values` | V[] | A newly allocated array containing every active value. |
+| `this[key]` (get) | V | The value associated with the supplied key. |
+| `this[key]` (set) | void | Assigns the value to the key, inserting a new pair when necessary. |
+| `Add(key, value)` | void | No meaningful return; the side effect is the inserted pair. |
+| `ContainsKey(key)` | bool | True when the key is present; false otherwise. |
+| `Remove(key)` | bool | True when an entry was removed; false when the key was absent. |
+| `Clear()` | void | No return value. |
+| `GetEnumerator()` | DictionaryEnumerator&lt;K, V&gt; | An enumerator that yields `KeyValuePair<K, V>` values. |
+| `Entry(key)` | Entry&lt;K, V&gt; | A view bound to the dictionary, key, and discovered slot. |
+| `Entry.OrInsert(value)` | V | The existing value if the key was occupied; otherwise the supplied value. |
+| `Entry.OrInsertWith(factory)` | V | The existing value if occupied; otherwise the value produced by the factory. |
+| `Entry.OrDefault()` | V | The existing value if occupied; otherwise the default value for V. |
+| `Entry.AndModify(modifier)` | Entry&lt;K, V&gt; | The same Entry instance after applying the modifier (if the key was occupied). |
+
+## Exceptions / Errors
+
+  - **Key already exists** — `Add(key, value)`  throws a runtime exception when the key is already present. Use the indexer or guard with  `ContainsKey` if you need overwrite semantics.
+  - **Key not found** — The indexer getter throws when the requested key is absent. Always check `ContainsKey` before reading, or be prepared to catch the runtime error.
+  - **Type mismatch** — The compiler rejects keys or values whose type does not match the dictionary's generic arguments. The key type must also be hashable by the runtime.
+  - **Unhashable key** — Custom reference types use identity hashing (object address) and identity equality by default. A mutable key that changes its identity-related state will become unreachable through normal lookups.
+  - **Invalid factory or modifier delegate** —  `OrInsertWith` and `AndModify` throw if the supplied delegate is `null` or does not resolve to a callable method.
+  - **Entry used after dictionary mutation** — An  `Entry<K, V>` stores the slot index discovered when it was created. If the dictionary is resized or otherwise rehashed before the Entry is used, the slot index may become stale and the operation may read or write the wrong key. Use Entries immediately and do not keep them across operations that change the dictionary size.
+
+## Remarks
+
+  **Open-addressing hash table with linear probing.**
+  `Dictionary<K, V>` stores keys, values, hashes, and slot states in four parallel arrays.
+  Each slot is marked empty (`0`), occupied (`1`), or deleted
+  (`-1`, a tombstone). Tombstones keep probe chains intact so that lookups continue to find
+  entries that were inserted after a deleted entry.
+
+  **Growth policy.** The dictionary starts with zero-length internal arrays and allocates an initial
+  capacity of four slots on the first insertion. After that, it doubles in size whenever the next insertion would push
+  occupancy past a 75% load factor. Resizing rehashes every active entry into the new arrays, discarding tombstones.
+
+  **Hashing and equality.** The runtime dispatches hashing through an internal helper that mirrors the
+  key's type: integers, characters, and booleans hash to their own value; doubles use their IEEE 754 bit pattern;
+  strings use a DJB2-style polynomial hash; all other types fall back to a hash of their object reference. Equality
+  matches the same pattern: value equality for primitives and strings, reference equality for everything else. This
+  means that using a mutable object as a key is generally unsafe.
+
+  **Enumeration and snapshots.** Iteration yields `KeyValuePair<K, V>`
+  structs in the physical order of occupied slots, which is not the insertion order. The `Keys`
+  and `Values` properties allocate fresh arrays on every access; modifying the dictionary does
+  not affect an array that was already returned.
+
+  **Asymmetric indexer.** The indexer setter silently inserts a missing key or overwrites an existing one,
+  while the getter throws on a missing key. This matches the design in the legacy page but is worth emphasizing:
+  treat the getter as a fast path when you already know the key exists, and `ContainsKey` as the
+  defensive alternative.
+
+<Info>
+`Dictionary<K, V>` is not sorted. If you need predictable ordering, copy the keys into
+  a `List<T>` and sort them, or iterate over the `Keys` array after
+  sorting it with host-side utilities.
+</Info>
+
+  **Entry API semantics.** `Entry(key)` performs a single hash-table probe
+  and returns a view that remembers whether the slot is occupied and which physical slot was found. The view
+  is a lightweight handle, not an independent collection item. Methods on the Entry either insert into the
+  remembered slot or read from it, so each operation is `O(1)` and does not re-probe the
+  dictionary.
+
+  **Factory and Modifier delegates.** `OrInsertWith` only invokes the
+  `Factory<V>` when the key is vacant, which is useful when the default value is
+  expensive to construct. `AndModify` only invokes the `Modifier<V>`
+  when the key is occupied and returns the same Entry so calls can be chained, for example
+  `dict.Entry(k).AndModify(...).OrInsert(...)`.
+
+  **Default value rules.** `OrDefault()` produces
+  `null` for reference types, `0` for integral primitives and
+  `bool`, `0.0` for `double`, and a default-constructed
+  instance for other value types. It is equivalent to calling `OrInsertWith` with a factory
+  that returns the default value.
+
+## Examples
+
+  **Basic create, read, update, and delete.**
+
+// dictionary_crud.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    scores: Dictionary<string, int> = new Dictionary<string, int>();
+
+    scores.Add("alice", 95);
+    scores.Add("bob", 87);
+
+    // Read an existing value.
+    println(scores["alice"]);
+
+    // Update through the indexer.
+    scores["bob"] = 92;
+    println(scores["bob"]);
+
+    // Remove an entry and verify it is gone.
+    removed: bool = scores.Remove("alice");
+    println(removed);
+    println(scores.ContainsKey("alice"));
+
+    // Current size after the removal.
+    println(scores.Count);
+}
+```
+
+  **Iterating with `foreach` and snapshot properties.**
+
+// dictionary_iteration.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    capitals: Dictionary<string, string> = new Dictionary<string, string>();
+    capitals.Add("france", "paris");
+    capitals.Add("japan", "tokyo");
+    capitals.Add("brazil", "brasília");
+
+    // foreach exposes KeyValuePair<K, V> values.
+    foreach (pair in capitals)
+    {
+        println(pair.Key + " -> " + pair.Value);
+    }
+
+    // Keys and Values allocate independent arrays.
+    keys: string[] = capitals.Keys;
+    values: string[] = capitals.Values;
+
+    println(keys.Length);
+    println(values.Length);
+}
+```
+
+  **Defensive reads and overwrite-on-conflict.**
+
+// dictionary_defensive.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    settings: Dictionary<string, int> = new Dictionary<string, int>();
+    settings.Add("timeout", 30);
+
+    // Add only when the key is absent; otherwise overwrite.
+    if (!settings.ContainsKey("retries"))
+    {
+        settings.Add("retries", 3);
+    }
+
+    // Safe read: provide a fallback without throwing.
+    timeout: int = 0;
+    if (settings.ContainsKey("timeout"))
+    {
+        timeout = settings["timeout"];
+    }
+    else
+    {
+        timeout = 60;
+    }
+    println(timeout);
+
+    // Indexer overwrites without error.
+    settings["timeout"] = 45;
+    println(settings["timeout"]);
+}
+```
+
+  **Entry API: insert, modify, and default values.**
+
+// dictionary_entry_api.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    scores: Dictionary<string, int> = new Dictionary<string, int>();
+
+    // OrInsert inserts when the key is vacant and returns the stored value.
+    alice: int = scores.Entry("alice").OrInsert(95);
+    println(alice);
+    println(scores["alice"]);
+
+    // OrInsert on an occupied key returns the existing value without overwriting.
+    aliceAgain: int = scores.Entry("alice").OrInsert(100);
+    println(aliceAgain);
+    println(scores["alice"]);
+
+    // OrInsertWith only calls the factory for a vacant key.
+    bob: int = scores.Entry("bob").OrInsertWith(lambda () -> int => 87);
+    println(bob);
+
+    // AndModify transforms an occupied value; the call returns the same Entry.
+    modified: int = scores.Entry("bob")
+        .AndModify(lambda (s: int) -> int => s + 5)
+        .OrInsert(0);
+    println(modified);
+    println(scores["bob"]);
+
+    // OrDefault inserts the default value for a vacant key.
+    zero: int = scores.Entry("carol").OrDefault();
+    println(zero);
+    println(scores["carol"]);
+
+    println(scores.Count);
+}
+```
+
+  **Edge cases and common mistakes.**
+
+// dictionary_edgecases.shard
+```csharp
+using stdio;
+using collections;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    counts: Dictionary<int, string> = new Dictionary<int, string>();
+    counts.Add(1, "one");
+
+    // Duplicate Add throws; indexer would have overwritten.
+    // counts.Add(1, "uno");   // ERROR at runtime
+
+    // Reading a missing key throws.
+    // println(counts[99]);    // ERROR at runtime
+
+    // Remove returns false without throwing for a missing key.
+    println(counts.Remove(99));
+
+    // Clearing empties the dictionary but keeps the type arguments intact.
+    counts.Clear();
+    println(counts.Count);
+
+    // Re-insertion after Clear works normally.
+    counts.Add(2, "two");
+    println(counts.Count);
+}
+```
+
+## See also
+
+  - [`IEnumerable & IEnumerator`](/stdlib/collections/ienumerable-and-ienumerator) — the iteration contract implemented by `Dictionary<K, V>`.
+  - [`List<T>`](/stdlib/collections/list) — dynamic array collection.
+  - [`Queue & Stack`](/stdlib/collections/queue-and-stack) — FIFO and LIFO collections.
+
+## Source
+
+  The `shard.collections` implementation ships as part of
+  `ShardScript.Framework`. The native binding for `Dictionary<K, V>`,
+  `Entry<K, V>`, `Factory<T>`,
+  `Modifier<T>`, `KeyValuePair<K, V>`, and related enumerators is in
+  `ShardScript.Framework/system/collections.shard.cpp`.

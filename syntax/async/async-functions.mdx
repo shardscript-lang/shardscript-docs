@@ -1,0 +1,376 @@
+---
+title: Async Functions
+---
+
+## Summary
+
+  The `async` modifier turns a method into an asynchronous state machine that
+  can suspend at `await` expressions and resume later via the libuv event loop.
+  Async methods return either `Task` (for void operations) or
+  `ValueTask<T>` (for value-producing operations), giving callers explicit
+  control over waiting, fire-and-forget execution, and result retrieval.
+
+## Syntax
+
+  An async method is declared by placing `async` immediately before
+  `func`. The return type must be one of the two async task types from the
+  `async` namespace.
+
+// async_signature.shard
+```csharp
+// Void-returning async method.
+public static async func DoWork() -> Task
+{
+    await Task.Delay(100);
+}
+
+// Value-returning async method.
+public static async func GetNumberAsync() -> ValueTask<int>
+{
+    await Task.Delay(10);
+    return 42;
+}
+```
+
+| Element | Required | Description |
+| --- | --- | ---
+| `async` | Yes | Appears before func; enables await and triggers state-machine lowering. |
+| `func` | Yes | Declares a function, just like a synchronous method. |
+| modifiers | No | Access modifiers (public, internal), static, and other method modifiers are allowed. |
+| parameters | No | Parameter list is identical to synchronous methods. |
+| return type | Yes | Must be async.Task or async.ValueTask&lt;T&gt;. |
+
+## Parameters / Arguments
+
+  Async methods take parameters exactly as synchronous methods do. The only special consideration is
+  that any parameter whose value must survive an `await` suspension is lifted
+  into a field on the compiler-generated state-machine class.
+
+  - `async` must appear immediately before `func`. It is not valid on constructors, destructors, or fields.
+  - The return type must be `Task` or `ValueTask<T>`. Other return types produce a compile-time error.
+  - `await` can only appear inside the body of an async method (or async lambda). Using it in a synchronous method is an error.
+  - The awaited expression must implement `IAwaitable` or  `IAwaiter`. The built-in `Task` and  `ValueTask<T>` types are self-awaiters.
+  - Parameters and locals whose lifetimes cross an `await` are hoisted into state-machine fields automatically by the compiler.
+
+## Returns
+
+| Return type | Use case | Result access |
+| --- | --- | ---
+| `Task` | Async work that produces no value. | Call Task.Wait(task) or task.Wait(). |
+| `ValueTask<T>` | Async work that produces a value of type T. | Call ValueTask.Wait(task), then read task.Result. |
+
+  When an async method returns `Task`, the returned object represents only
+  completion or failure. When it returns `ValueTask<T>`, the result value
+  is stored in the task after completion and exposed through the `Result`
+  property.
+
+## Exceptions / Errors
+
+  - **Invalid async return type** — An async method that does not return `Task` or `ValueTask<T>` fails semantic analysis.
+  - **await outside async** — `await`  used in a synchronous method, property getter, or constructor is rejected.
+  - **Non-awaitable type** — Awaiting an expression whose type does not implement `IAwaitable` or `IAwaiter`  produces a compile error.
+  - **Mismatched return value** — Returning a value from a  `Task`-returning async method, or omitting the return value from a  `ValueTask<T>`-returning method, is an error.
+  - **Unhandled async exception** — An exception thrown inside an async method is captured by the task, which transitions to `FAULTED`. The exception is re-thrown when the caller invokes `Wait()` or reads  `.Result`.
+  - **Premature result access** — Reading  `ValueTask<T>.Result` before the task is completed reads the uninitialized field. Always `Wait()` first.
+
+## Remarks
+
+## State machine overview
+
+  Before bytecode is emitted, the compiler runs a dedicated lowering pipeline on every async method.
+  The original body is rewritten into a compiler-generated class with a `MoveNext`
+  method, a `State` field, and fields for every lifted local and parameter.
+
+  - **AsyncHoistingPass** discovers await sites and decides which parameters and locals must survive suspension.
+  - **AsyncAnalysisPass** validates control flow, defers, and try/catch regions across await boundaries.
+  - **AsyncStateMachineLowering** creates the state-machine class, splits the body at each `await`, and emits a  `MoveNext` dispatcher that switches on the state field.
+  - **AsyncEmissionPass** emits the bytecode sequences for saving state, registering continuations, and resuming after completion.
+
+  Each `await` becomes a state transition. The compiler emits code that checks
+  `IsCompleted`, registers the state machine as the continuation via
+  `OnCompleted`, sets the next state, and returns from the current bytecode loop.
+  When the awaited operation completes, the event loop invokes `MoveNext`, which
+  jumps to the resume segment and restores the lifted locals.
+
+## Await suspension and the fast path
+
+  `await` is a unary operator with high precedence. It can appear as a
+  statement, an assignment initializer, or even inside an `if` condition. When
+  the awaited task is already completed — for example, a `ValueTask.FromResult`
+  value — the compiler bypasses suspension and continues synchronously.
+
+<Info>
+`Task` and `ValueTask<T>` are self-awaiters: their
+  `GetAwaiter()` method returns `this`. This avoids
+  allocating a separate awaiter object for every await expression.
+</Info>
+
+## Calling conventions
+
+  Invoking an async method returns a task immediately; the body runs later as the event loop pumps.
+  The caller decides how to relate to the task:
+
+  - **Wait** — `Task.Wait(task)` or  `task.Wait()` cooperatively blocks the calling thread by running the event loop until the task completes. If the task faulted, the stored exception is re-thrown.
+  - **Retrieve a result** — For `ValueTask<T>`, call `ValueTask.Wait(task)` and then read `task.Result`.
+  - **Fire and forget** — `Task.Shoot(task)`  releases the caller's frame ownership so the task runs independently. The VM terminates outstanding fire-and-forget tasks at shutdown.
+
+## Cooperative execution and the event loop
+
+  ShardScript async code is single-threaded and cooperative. Only one task's bytecode runs at a time;
+  suspension happens only at explicit `await` points. The event loop (backed by
+  libuv) dispatches timer and I/O callbacks on the same thread, so no locks or atomics are required
+  in user code.
+
+<Warning>
+Long-running synchronous work inside an async method starves the event loop. Offload CPU-bound work
+  or insert yield points such as `await Task.Delay(0)` to let other tasks run.
+</Warning>
+
+## defer and exception handling across awaits
+
+  `defer` statements registered before an `await` are
+  honored when the method eventually returns, even if the method suspends and resumes multiple times.
+  `try`/`catch`/`finally` regions are
+  preserved across suspensions; exceptions thrown inside awaited tasks are re-thrown at the await site
+  when the state machine resumes.
+
+## Examples
+
+  **Basic Task and blocking wait.**
+
+// async_basic.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public class Program
+{
+    public static async func DelayedHello() -> Task
+    {
+        println("before delay");
+        await Task.Delay(100);
+        println("after delay");
+    }
+
+    public static func Main() -> void
+    {
+        Task.Wait(DelayedHello());
+        println("done");
+    }
+}
+```
+
+  **ValueTask and result access.**
+
+// async_valuetask.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public class Program
+{
+    public static async func GetNumberAsync() -> ValueTask<int>
+    {
+        await Task.Delay(10);
+        return 42;
+    }
+
+    public static func Main() -> void
+    {
+        task: ValueTask<int> = GetNumberAsync();
+        ValueTask.Wait(task);
+        result: int = task.Result + 1;
+        println(result);  // 43
+    }
+}
+```
+
+  **Await inside loops and conditions.**
+
+// async_control_flow.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public class Program
+{
+    public static async func GetBoolAsync() -> ValueTask<bool>
+    {
+        await Task.Delay(10);
+        return true;
+    }
+
+    public static async func DoItAsync() -> Task
+    {
+        i: int = 0;
+        while (i < 4)
+        {
+            if (i % 2 == 0)
+            {
+                println("even before");
+                await Task.Delay(1);
+                println("even after");
+            }
+            else
+            {
+                println("odd before");
+                await Task.Delay(1);
+                println("odd after");
+            }
+
+            i = i + 1;
+        }
+
+        if (await GetBoolAsync())
+        {
+            println("condition true");
+        }
+
+        println("done");
+    }
+
+    public static func Main() -> void
+    {
+        Task.Wait(DoItAsync());
+    }
+}
+```
+
+  **Exception propagation and try/catch.**
+
+// async_exceptions.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public class Program
+{
+    public static async func FaultyDelay() -> Task
+    {
+        await Task.Delay(10);
+        throw new RuntimeException();
+    }
+
+    public static async func CaughtAwait() -> Task
+    {
+        try
+        {
+            await FaultyDelay();
+            println("after await");  // never reached
+        }
+        catch (ex: RuntimeException)
+        {
+            println("caught inside async");
+        }
+    }
+
+    public static func Main() -> void
+    {
+        try
+        {
+            Task.Wait(CaughtAwait());
+        }
+        catch (ex: RuntimeException)
+        {
+            println("caught in Main");
+        }
+
+        println("done");
+    }
+}
+```
+
+  **Fire-and-forget with Task.Shoot.**
+
+// async_fire_and_forget.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public class Program
+{
+    public static async func Background() -> Task
+    {
+        println("background start");
+        await Task.Delay(100);
+        println("background end");
+    }
+
+    public static func Main() -> void
+    {
+        // Run independently; Main does not wait for completion.
+        Task.Shoot(Background());
+        println("main end");
+    }
+}
+```
+
+<Warning>
+Without `Task.Shoot`, discarding the returned task means the caller is not
+  blocked. If `Main` exits while the task is still pending, the VM halts the
+  outstanding task at shutdown. Use `Shoot` explicitly to document intent for
+  true fire-and-forget work.
+</Warning>
+
+  **Synchronously completed ValueTask.**
+
+// async_fromresult.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public class Program
+{
+    public static func Main() -> void
+    {
+        task: ValueTask<int> = ValueTask.FromResult<int>(99);
+        println(task.IsCompleted);  // true
+        println(task.Result);       // 99
+        task.Wait();                // returns immediately
+    }
+}
+```
+
+  **defer across an await suspension.**
+
+// async_defer.shard
+```csharp
+using stdio;
+using async;
+
+namespace demo;
+
+public class Program
+{
+    public static async func DoItAsync() -> Task
+    {
+        defer println("deferred cleanup");
+        println("before");
+        await Task.Delay(10);
+        println("after");
+    }
+
+    public static func Main() -> void
+    {
+        task: Task = DoItAsync();
+        Task.Wait(task);
+    }
+}
+```
+
+<Info>
+In the defer example, the deferred action runs after the method body completes, regardless of how
+  many `await` suspensions occurred.
+</Info>

@@ -1,0 +1,396 @@
+---
+title: Common Problems & Solutions
+---
+
+## Summary
+
+  This article catalogs the most frequent failures that occur when authoring a ShardScript native C++
+  library and the concrete code changes that fix them. The symptoms apply regardless of whether the library
+  is built inside `ShardScript.Framework` or as a standalone project.
+
+## Syntax
+
+  Native callbacks share a single signature. Every problem in this article manifests inside a callback
+  registered through `.SetCallback(...)`, inside the entry point that registers
+  the symbol, or in the way the runtime sees the registered type.
+
+```cpp
+shard::ObjectInstance* Callback(const shard::CallState& context);
+```
+
+| Problem | Usual location | One-line fix |
+| --- | --- | ---
+| Callback is never called. | Registration (SHARDLIB_ENTRYPOINT) | Call .SetCallback(...) and match LINK_STATIC / LINK_INSTANCE to the call site. |
+| Generic type arguments are wrong. | Callback body | Read context.Frame-&gt;TypeArguments and allocate with AllocateGeneric. |
+| AsString() crashes. | Callback body | Guard against nullptr and GarbageCollector::NullInstance. |
+| Native pointer is freed by the GC. | Callback return | Pass isTransient = true to Collector.FromNint for external handles. |
+| Cross-library type lookups are null. | Static state / callback body | Use lazy EnsureSymbols helpers called from the callback. |
+| Async callback runs after collection. | Async continuation | Pin the instance with ObjectRef before capturing it. |
+| Overload resolution fails. | Registration | Differ by parameter count and types; use TYPE_ANY explicitly. |
+| Returning a struct behaves unexpectedly. | Callback body | Allocate an instance with AllocateInstance and return it. |
+| getInfo() returns the generic definition. | Callback body / reflection | Read concrete arguments from instance-&gt;getShape()-&gt;GenericArguments. |
+
+## Parameters / Arguments
+
+  The "parameters" of each failure are the registration choices and runtime values that trigger it.
+
+| Failure input | What it looks like in code | Why it fails |
+| --- | --- | ---
+| `.SetCallback omitted` | method.AddParameter(L"x", TYPE_INT); | The symbol resolves but has no native target. |
+| `LINK_STATIC registered` | `obj.Method() called` | The VM does not pass this, so argument indices shift. |
+| `LINK_INSTANCE registered` | `Type.Method() called` | The VM expects this but the call site does not provide it. |
+| Raw generic class used at runtime | `AllocateInstance(rawClass)` | The instance has no concrete type substitutions. |
+| `nullptr passed to AsString()` | `context.Args[0]->AsString()` | Null instances do not have a string payload. |
+| External handle boxed as managed pointer | `FromNint(handle, false)` | The GC eventually calls the library destructor on foreign memory. |
+| Cross-library symbol cached globally | `static TypeSymbol* t = FindTypeByName(...);` | Load order is not guaranteed; the other library may not be registered yet. |
+| Instance captured by raw pointer in async work | `state->Instance = instance;` | The GC cannot see the captured pointer and may collect the object. |
+| Overloads differ only by name | Two methods named Add with different bodies | Resolution uses name + count + types. |
+| `getInfo() on a generic instance` | `instance->getInfo()` | getInfo returns the raw definition; constructed type data lives elsewhere. |
+
+## Returns
+
+  A correctly written native callback returns a GC-owned `ObjectInstance*`, or
+  `nullptr` for `void` methods. The fixes in this article do
+  not change the return type; they change how the return value is produced or how the arguments that feed
+  it are validated.
+
+  - Primitive results are boxed through `context.Collector.FromValue(...)`.
+  - Opaque native pointers are boxed through  `context.Collector.FromNint(ptr, isTransient)`.
+  - Generic instances are allocated through  `context.Collector.AllocateGeneric(rawClass, { concreteT })`.
+  - Struct values are allocated through  `context.Collector.AllocateInstance(structClass)` and returned by pointer.
+
+## Exceptions / Errors
+
+  - **Symbol resolves but callback never runs** — Forgetting  `.SetCallback(...)`, or registering with `LINK_STATIC`  and calling the member on an instance (or vice versa), leaves the method without an executable target.
+  - **Wrong generic type at runtime** — Reading type arguments from the wrong frame level, allocating the raw generic definition, or indexing  `TypeArguments` in the wrong order produces a type mismatch or a crash when the VM uses the concrete substitution.
+  - **Access violation in AsString** — Calling  `AsString()` on `nullptr` or  `GarbageCollector::NullInstance` dereferences a null or sentinel payload.
+  - **Double-free or use-after-free of native memory** — Passing an external handle to `FromNint(ptr, false)` tells the GC it owns the memory. The library destructor is later invoked on memory that was never allocated by the library.
+  - **Null cross-library TypeSymbol*** — Caching a pointer during static initialization or even inside `SHARDLIB_ENTRYPOINT` can happen before the depended-on library has registered its symbols.
+  - **Async callback accesses collected object** — Capturing a raw `ObjectInstance*` in a thread-pool or libuv continuation allows the GC to reclaim the object before the continuation runs.
+  - **Ambiguous overload resolution** — ShardScript resolves overloads by name, parameter count, and parameter types. Two overloads with the same name and identical signatures, or overloads that differ only by return type, cannot be distinguished.
+  - **Struct returned as null or unboxed incorrectly** — Structs are value types. Returning a raw pointer to stack memory or forgetting to allocate an instance produces undefined behavior; the VM expects a managed instance it can copy.
+  - **Reflection sees the generic definition, not the constructed type**  — `instance->getInfo()` always returns the raw `ClassSymbol`. The concrete substitutions are stored on the instance shape.
+
+## Remarks
+
+<Info title="Native library shape">
+A ShardScript native library is any shared library (`.dll` on Windows, `.so` on Linux, `.dylib` on macOS) that exports the two C-linkage symbols `ShardLib_GetMetadata` and `ShardLib_EntryPoint`. It can be built from one or many C++ source files, live inside `ShardScript.Framework` or in a completely separate project, and links against the ShardScript runtime shared library using headers from `ShardScript/include`. For the full registration contract, see `native-library-overview.mdx`.
+</Info>
+
+  **Argument ownership.** Arguments passed to a callback are borrowed. Do not delete or free
+  them. Return values must be owned by the garbage collector so the VM can track them. Any object that
+  escapes the synchronous callback boundary, such as an instance captured by an async continuation, must be
+  pinned with `ObjectRef` until the asynchronous work completes.
+
+  **Generic argument frames.** For generic classes, `context.Frame->TypeArguments`
+  contains the concrete substitutions in the same order as the `AddTypeParameter` calls.
+  For generic methods, the type arguments are also in the method frame, but the frame that supplies them may
+  differ from the class frame. Always allocate constructed generic instances with
+  `AllocateGeneric(rawClass, { concreteT })` rather than
+  `AllocateInstance(rawClass)`.
+
+  **Cross-library symbol lifetime.** The loader enforces dependency order before your entry
+  point runs, but it does not guarantee that another library&apos;s symbols are reachable from your static
+  initializers. Perform cross-library lookups lazily inside `EnsureSymbols(SymbolTable*)`
+  helpers and call those helpers from the callback body. This pattern avoids both null-pointer crashes and
+  brittle static initialization order.
+
+<Info>
+If a problem is not listed here, check the registration contract first: does the shared library export
+  both `ShardLib_GetMetadata` and `ShardLib_EntryPoint`, are
+  the headers from `ShardScript/include` on the include path, and does the binary link
+  against the ShardScript runtime shared library?
+</Info>
+
+## Examples
+
+  **1. Callback is never called.** The most common cause is forgetting
+  `.SetCallback(...)` or mismatching the linking mode.
+
+```cpp
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> demo(context, L"demo");
+
+    demo.AddClass(L"Counter", ACS_PUBLIC, LINK_STATIC, [](SymbolBuilder<ClassSymbol> counter)
+    {
+        // CORRECT: SetCallback is called and LINK_STATIC matches Type.Method() usage.
+        counter.AddMethod(L"Next", TYPE_INT, LINK_STATIC, ACS_PUBLIC)
+               .SetCallback([](const CallState& context)
+               {
+                   static std::int64_t value = 0;
+                   value = value + 1;
+                   return context.Collector.FromValue(value);
+               });
+
+        // WRONG: missing .SetCallback(...). The symbol resolves but nothing runs.
+        counter.AddMethod(L"Broken", TYPE_INT, LINK_STATIC, ACS_PUBLIC);
+
+        // WRONG for a static call site: LINK_INSTANCE would require an instance.
+        // counter.AddMethod(L"Next", TYPE_INT, LINK_INSTANCE, ACS_PUBLIC)
+        //        .SetCallback(...);
+    });
+}
+```
+
+  ShardScript usage:
+
+```csharp
+using stdio;
+using demo;
+
+namespace program;
+
+public static func Main() -> void
+{
+    value: int = Counter.Next();
+    println(value);   // 1
+}
+```
+
+  **2. Generic type arguments are wrong at runtime.** Read type arguments from the frame and
+  allocate the constructed generic.
+
+```cpp
+static ClassSymbol* g_boxClass = nullptr;
+static TypeParameterSymbol* g_boxT = nullptr;
+static FieldSymbol* g_valueField = nullptr;
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> demo(context, L"demo");
+
+    g_boxClass = demo.AddClass(L"Box", ACS_PUBLIC, LINK_INSTANCE, [](SymbolBuilder<ClassSymbol> box)
+    {
+        g_boxT = box.AddTypeParameter(L"T").Get();
+        g_valueField = box.AddField(L"_value", g_boxT, LINK_INSTANCE, ACS_PRIVATE);
+
+        box.AddInit()
+           .AddParameter(L"value", g_boxT)
+           .SetCallback([](const CallState& context)
+           {
+               ObjectInstance* self = context.Args[0];
+               ObjectInstance* value = context.Args[1];
+
+               // Store the value in a field typed as the type parameter.
+               self->SetField(g_valueField->SlotIndex, value);
+               return self;
+           });
+    });
+}
+
+static ObjectInstance* make_box(const CallState& context)
+{
+    // The concrete substitution for T is the first type argument on the current frame.
+    TypeSymbol* concreteT = context.Frame->TypeArguments[0];
+
+    // Allocate the constructed generic, not the raw definition.
+    ObjectInstance* box = context.Collector.AllocateGeneric(g_boxClass, { concreteT });
+
+    // The constructor parameter expects an instance of the concrete type.
+    ObjectInstance* initial = context.Collector.FromValue(42);
+    box->SetField(g_valueField->SlotIndex, initial);
+
+    return box;
+}
+```
+
+  **3. AsString() crashes on a null argument.** Always guard reference arguments before
+  dereferencing them.
+
+```cpp
+static ObjectInstance* safe_concat(const CallState& context)
+{
+    ObjectInstance* left = context.Args[0];
+    ObjectInstance* right = context.Args[1];
+
+    if (left == nullptr || left == GarbageCollector::NullInstance)
+    {
+        return context.Collector.FromValue(std::wstring());
+    }
+
+    if (right == nullptr || right == GarbageCollector::NullInstance)
+    {
+        return context.Collector.FromValue(std::wstring(left->AsString()));
+    }
+
+    std::wstring result = std::wstring(left->AsString()) + std::wstring(right->AsString());
+    return context.Collector.FromValue(result);
+}
+```
+
+  **4. Native pointer is freed by the GC.** Mark external handles as transient so the GC does
+  not call the library destructor on them.
+
+```cpp
+static ObjectInstance* wrap_handle(const CallState& context)
+{
+    // This handle points to memory owned by the OS or a third-party library.
+    void* osHandle = OpenNativeResource();
+
+    // isTransient = true: the GC will not try to free this pointer.
+    return context.Collector.FromNint(osHandle, true);
+}
+```
+
+  **5. Cross-library type lookups are null.** Use a lazy lookup helper that runs inside the
+  callback.
+
+```cpp
+static TypeSymbol* g_listType = nullptr;
+
+static void EnsureSymbols(SymbolTable* table)
+{
+    if (g_listType != nullptr)
+    {
+        return;
+    }
+
+    // Lazy lookup avoids brittle static initialization order between libraries.
+    g_listType = SemanticModel::FindTypeByName(table, L"collections.List");
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> demo(context, L"demo");
+
+    demo.AddMethod(L"UseList", TYPE_VOID, LINK_STATIC, ACS_PUBLIC)
+        .SetCallback([](const CallState& context)
+        {
+            EnsureSymbols(context.GetSemanticModel().Table.get());
+
+            // g_listType is now valid, or the lookup failed and can be reported.
+            return nullptr;
+        });
+}
+```
+
+  **6. Async callback runs after the object was collected.** Pin the object with
+  `ObjectRef` before the continuation captures it.
+
+```cpp
+#include <shard/runtime/NativeAsync.hpp>
+
+struct DelayedState
+{
+    ObjectRef InstanceRef;
+};
+
+static ObjectInstance* delayed_read(const CallState& context) noexcept
+{
+    ObjectInstance* instance = context.Args[0];
+
+    return shard::DoAsync(context, [instance](shard::AsyncScope async)
+    {
+        std::shared_ptr<DelayedState> state = std::make_shared<DelayedState>();
+
+        // Pin the instance so it survives until the async continuation finishes.
+        state->InstanceRef = ObjectRef(instance);
+
+        async.Delay(100, [state, async]() mutable
+        {
+            // Safe to use state->InstanceRef.Get() here because the pin is still alive.
+            async.Complete();
+        });
+    });
+}
+```
+
+  **7. Method overload resolution fails.** Overloads must differ by parameter count and
+  parameter types.
+
+```cpp
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> demo(context, L"demo");
+
+    demo.AddClass(L"Writer", ACS_PUBLIC, LINK_STATIC, [](SymbolBuilder<ClassSymbol> writer)
+    {
+        // Overload 1: one integer argument.
+        writer.AddMethod(L"Write", TYPE_VOID, LINK_STATIC, ACS_PUBLIC)
+              .AddParameter(L"value", TYPE_INT)
+              .SetCallback(&write_int);
+
+        // Overload 2: one string argument.
+        writer.AddMethod(L"Write", TYPE_VOID, LINK_STATIC, ACS_PUBLIC)
+              .AddParameter(L"value", TYPE_STRING)
+              .SetCallback(&write_string);
+
+        // Overload 3: two arguments.
+        writer.AddMethod(L"Write", TYPE_VOID, LINK_STATIC, ACS_PUBLIC)
+              .AddParameter(L"key", TYPE_STRING)
+              .AddParameter(L"value", TYPE_ANY)
+              .SetCallback(&write_key_value);
+    });
+}
+```
+
+  **8. Returning a struct by value.** Allocate a managed instance and let the VM copy the value.
+
+```cpp
+static ClassSymbol* g_pointClass = nullptr;
+static FieldSymbol* g_xField = nullptr;
+static FieldSymbol* g_yField = nullptr;
+
+static ObjectInstance* make_point(const CallState& context)
+{
+    ObjectInstance* point = context.Collector.AllocateInstance(g_pointClass);
+
+    // Structs are value types; the returned instance is copied by the VM as needed.
+    point->SetField(g_xField->SlotIndex, context.Collector.FromValue(context.Args[0]->AsDouble()));
+    point->SetField(g_yField->SlotIndex, context.Collector.FromValue(context.Args[1]->AsDouble()));
+
+    return point;
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> demo(context, L"demo");
+
+    g_pointClass = demo.AddStruct(L"Point", ACS_PUBLIC, LINK_INSTANCE);
+
+    g_xField = g_pointClass.AddField(L"X", TYPE_DOUBLE, LINK_INSTANCE, ACS_PUBLIC);
+    g_yField = g_pointClass.AddField(L"Y", TYPE_DOUBLE, LINK_INSTANCE, ACS_PUBLIC);
+
+    g_pointClass.AddMethod(L"Create", TYPE_ANY, LINK_STATIC, ACS_PUBLIC)
+         .AddParameter(L"x", TYPE_DOUBLE)
+         .AddParameter(L"y", TYPE_DOUBLE)
+         .SetCallback(&make_point);
+}
+```
+
+  **9. getInfo() returns the generic definition, not the constructed type.** Inspect the
+  instance shape for concrete type arguments.
+
+```cpp
+static ObjectInstance* describe_box(const CallState& context)
+{
+    ObjectInstance* instance = context.Args[0];
+
+    // getInfo() always returns the raw ClassSymbol definition.
+    ClassSymbol* definition = static_cast<ClassSymbol*>(instance->getInfo());
+
+    TypeSymbol* concreteT = nullptr;
+
+    // The constructed type arguments live on the instance shape.
+    if (instance->getShape() != nullptr && !instance->getShape()->GenericArguments.empty())
+    {
+        concreteT = instance->getShape()->GenericArguments[0];
+    }
+
+    // Use concreteT for type-specific logic...
+    return context.Collector.FromValue(std::wstring(definition->Name));
+}
+```
+
+## See also
+
+  - [`library-building/design-best-practices`](/library-building/concepts/design-best-practices) — design best practices.
+  - [`library-building/garbage-collection-rules`](/library-building/concepts/garbage-collection-rules) — GC and lifetime rules.
+  - [`library-building/working-with-objects`](/library-building/how-to/working-with-objects) — common object manipulation mistakes.
+  - [`library-building/headers-quick-reference`](/library-building/reference/headers-quick-reference) — header locations.
+
+## Source
+
+  Framework system libraries live in `ShardScript.Framework/system/`.
+  Browse the directory on GitHub: `https://github.com/Rikitav/ShardScript/blob/main/ShardScript.Framework/system/`.

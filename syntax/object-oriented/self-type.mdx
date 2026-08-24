@@ -1,0 +1,221 @@
+---
+title: Self Type
+---
+
+## Summary
+
+  The `Self` keyword resolves to the enclosing class or struct type. Inside a
+  non-generic type it is equivalent to the type name; inside a generic type it refers to the type with
+  its own type parameters applied, for example `Container<T>` inside
+  `Container<T>`. `Self` is useful when implementing
+  generic interfaces such as `ICloneable<Self>` or
+  `IComparable<Self>`.
+
+## Syntax
+
+  `Self` is written wherever a type name is expected: return types, parameter
+  types, local variable types, and base-interface lists. It is only valid inside a
+  `class` or `struct` declaration.
+
+// self_type_syntax.shard
+```csharp
+public interface ICloneable<T>
+{
+    func Clone() -> T;
+}
+
+public class Foo : ICloneable<Self>
+{
+    public func Clone() -> Self
+    {
+        result: Self = new Foo();
+        return result;
+    }
+}
+
+public class Container<T>
+{
+    public Value: T;
+
+    public func GetSelf() -> Self
+    {
+        return this;
+    }
+}
+```
+
+## Parameters / Arguments
+
+| Context | Meaning | Example |
+| --- | --- | ---
+| Inside a non-generic class/struct | Resolves to the enclosing type. | In `class Foo`, `Self` means `Foo`. |
+| Inside a generic class/struct | Resolves to the type with its own parameters applied. | In `class Container<T>`, `Self` means `Container<T>`. |
+| As a generic interface argument | Supplies the enclosing type as the type argument. | `class Foo : ICloneable<Self>` is `Foo : ICloneable<Foo>`. |
+
+## Returns
+
+  `Self` is a type expression, not a value expression. When used as a return type
+  or parameter type, the compiled member has the resolved concrete or constructed type.
+
+## Exceptions / Errors
+
+  - **Self outside class or struct** — Using  `Self` in global scope, inside an interface, inside a method that is not a member of a class or struct, or in any other context produces the compile-time error  `'Self' can only be used inside a class or struct declaration`.
+  - **Self in interface declaration** — Interfaces may not use `Self`. Use an explicit type parameter or the interface name instead.
+
+## Remarks
+
+  **Resolution.** During type binding the compiler looks up the enclosing type. If that
+  type has no type parameters, `Self` is replaced with the type symbol directly.
+  If the type declares parameters, a constructed generic type is built by applying each parameter to
+  itself, so `Self` inside `class Box<T>` becomes
+  `Box<T>` rather than the raw generic definition.
+
+  **Generic interfaces.** The most common use of `Self` is as the
+  type argument to a generic interface implemented by the enclosing type. This lets the interface
+  contract refer to the implementing type without hard-coding its name, making the pattern reusable.
+
+<Info>
+`Self` is not a runtime value. It is purely a compile-time shorthand that
+  resolves to the enclosing type before bytecode is emitted.
+</Info>
+
+## Examples
+
+  **Self in a non-generic class.**
+
+// self_non_generic.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Node
+{
+    public Value: int;
+
+    public func GetSelf() -> Self
+    {
+        return this;
+    }
+}
+
+public static func Main() -> void
+{
+    node: Node = new Node();
+    node.Value = 10;
+
+    selfRef: Node = node.GetSelf();
+    println(selfRef.Value);
+}
+```
+
+  **Self with a generic interface.**
+
+// self_generic_interface.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public interface ICloneable<T>
+{
+    func Clone() -> T;
+}
+
+public interface IComparable<T>
+{
+    func CompareTo(other: T) -> int;
+}
+
+public class Foo : ICloneable<Self>, IComparable<Self>
+{
+    public Value: int;
+
+    public func Clone() -> Self
+    {
+        result: Self = new Foo();
+        result.Value = this.Value;
+        return result;
+    }
+
+    public func CompareTo(other: Self) -> int
+    {
+        return this.Value - other.Value;
+    }
+}
+
+public static func Main() -> void
+{
+    original: Foo = new Foo();
+    original.Value = 42;
+
+    copy: Foo = original.Clone();
+    println(copy.Value);
+
+    other: Foo = new Foo();
+    other.Value = 5;
+    println(original.CompareTo(other));
+}
+```
+
+  **Self inside a generic class.**
+
+// self_generic_class.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public interface ICloneable<T>
+{
+    func Clone() -> T;
+}
+
+public class ShapeShifter<T> : ICloneable<Self>
+{
+    public Value: T;
+
+    public func Clone() -> Self
+    {
+        result: Self = new ShapeShifter<T>();
+        result.Value = this.Value;
+        return result;
+    }
+}
+
+public static func Main() -> void
+{
+    shifter: ShapeShifter<int> = new ShapeShifter<int>();
+    shifter.Value = 7;
+
+    clone: ShapeShifter<int> = shifter.Clone();
+    println(clone.Value);
+}
+```
+
+  **Common mistake: using Self outside a class or struct.**
+
+// self_outside_type.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // ERROR: 'Self' can only be used inside a class or struct declaration.
+    // x: Self;
+}
+```
+
+## See also
+
+  - [`interfaces`](/syntax/object-oriented/interfaces) — declaring and implementing interfaces.
+  - [`generics`](/syntax/object-oriented/generics) — generic classes, methods, and type parameters.
+  - [`generic-constraints`](/syntax/object-oriented/generic-constraints) — constraining type parameters with interfaces.
+
+## Source
+
+  `Self` resolution is implemented in
+  `ShardScript/src/semantic/TypeBinder.cpp` inside
+  `TypeBinder::VisitIdentifierNameType`.

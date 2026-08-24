@@ -1,0 +1,264 @@
+---
+title: Date & Time
+---
+
+## Summary
+
+  The `shard.time` library provides two value types in the `time`
+  namespace: `TimeSpan` for representing a duration, and
+  `DateTime` for representing an instant in time. Both are implemented as native structs,
+  store their data as 64-bit tick counts, and expose factory methods, properties, arithmetic operators, and
+  formatting helpers.
+
+## Syntax
+
+  Reference the `time` namespace with a `using` directive. The
+  library is loaded automatically when a `using time;` directive is present, or it can
+  be passed to the interpreter with the `-l` flag when running standalone scripts.
+
+// time_intro.shard
+```csharp
+using stdio;
+using time;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    span: TimeSpan = TimeSpan.FromSeconds(90.0);
+    println(span.TotalMinutes);
+
+    now: DateTime = DateTime.Now;
+    println(now.ToString("yyyy-MM-dd HH:mm:ss"));
+}
+```
+
+## Parameters / Arguments
+
+## Enum DateTimeKind
+
+| Value | Numeric value | Meaning |
+| --- | --- | ---
+| `DateTimeKind.Utc` | 0 | The DateTime expresses a UTC instant. |
+| `DateTimeKind.Local` | 1 | The DateTime expresses a local-time instant. |
+| `DateTimeKind.Unspecified` | 2 | The DateTime expresses an unspecified kind. |
+
+## Struct TimeSpan
+
+  `TimeSpan` stores a signed number of 100-nanosecond ticks. Positive and negative
+  durations are supported.
+
+## TimeSpan static factory methods
+
+| Method | Parameter | Returns | Description |
+| --- | --- | --- | ---
+| `FromTicks(ticks)` | `ticks`: int | TimeSpan | Creates a TimeSpan from a raw tick count. |
+| `FromMilliseconds(value)` | `value`: double | TimeSpan | Creates a TimeSpan from a number of milliseconds. |
+| `FromSeconds(value)` | `value`: double | TimeSpan | Creates a TimeSpan from a number of seconds. |
+| `FromMinutes(value)` | `value`: double | TimeSpan | Creates a TimeSpan from a number of minutes. |
+| `FromHours(value)` | `value`: double | TimeSpan | Creates a TimeSpan from a number of hours. |
+| `FromDays(value)` | `value`: double | TimeSpan | Creates a TimeSpan from a number of days. |
+
+## TimeSpan properties
+
+| Property | Type | Description |
+| --- | --- | ---
+| `Ticks` | int | The complete signed tick count. |
+| `TotalMilliseconds` | double | Duration expressed in milliseconds, including fractional part. |
+| `TotalSeconds` | double | Duration expressed in seconds, including fractional part. |
+| `TotalMinutes` | double | Duration expressed in minutes, including fractional part. |
+| `TotalHours` | double | Duration expressed in hours, including fractional part. |
+| `TotalDays` | double | Duration expressed in days, including fractional part. |
+| `Days` | int | Whole days component of the duration, including the sign. |
+| `Hours` | int | Whole hours component. For negative durations the remainder can be negative. |
+| `Minutes` | int | Whole minutes component. For negative durations the remainder can be negative. |
+| `Seconds` | int | Whole seconds component. For negative durations the remainder can be negative. |
+| `Milliseconds` | int | Whole milliseconds component. For negative durations the remainder can be negative. |
+
+## TimeSpan methods
+
+| Method | Parameters | Returns | Description |
+| --- | --- | --- | ---
+| `Add(other)` | `other`: TimeSpan | TimeSpan | Returns the sum of this span and another span. |
+| `Subtract(other)` | `other`: TimeSpan | TimeSpan | Returns the difference between this span and another span. |
+| `Negate()` | none | TimeSpan | Returns a new TimeSpan with the opposite sign. |
+| `Duration()` | none | TimeSpan | Returns the absolute value of this span. |
+| `ToString()` | none | string | Returns a culture-invariant string such as "1.02:03:04.005" or "02:03:04". |
+
+## TimeSpan operators
+
+| Operator | Signature | Description |
+| --- | --- | ---
+| `a + b` | TimeSpan + TimeSpan | Adds two spans. |
+| `a - b` | TimeSpan - TimeSpan | Subtracts two spans. |
+| `a * factor` | TimeSpan * double | Multiplies the span by a scalar. |
+| `factor * a` | double * TimeSpan | Multiplies the span by a scalar. |
+| `a / divisor` | TimeSpan / double | Divides the span by a scalar. |
+| `a / b` | TimeSpan / TimeSpan | Returns the ratio of two spans as a double. |
+| `-a` | -TimeSpan | Negates the span. |
+| `a == b` | TimeSpan == TimeSpan | Returns true if the spans have the same tick count. |
+| `a != b` | TimeSpan != TimeSpan | Returns true if the spans differ in tick count. |
+| `a < b` | TimeSpan &lt; TimeSpan | Tick-count less-than comparison. |
+| `a > b` | TimeSpan &gt; TimeSpan | Tick-count greater-than comparison. |
+| `a <= b` | TimeSpan &lt;= TimeSpan | Tick-count less-than-or-equal comparison. |
+| `a >= b` | TimeSpan &gt;= TimeSpan | Tick-count greater-than-or-equal comparison. |
+
+## Struct DateTime
+
+  `DateTime` stores an instant as a 64-bit tick count together with a
+  `DateTimeKind`. One tick is 100 nanoseconds. The epoch for Unix conversions is
+  1970-01-01 00:00:00 UTC.
+
+## DateTime static factory members
+
+| Member | Parameters | Returns | Description |
+| --- | --- | --- | ---
+| `Now` | none | DateTime | Static property that returns the current local time. |
+| `UtcNow` | none | DateTime | Static property that returns the current UTC time. |
+| `FromUnixTimeSeconds(seconds)` | `seconds`: int | DateTime | Creates a UTC DateTime from a Unix seconds timestamp. |
+| `FromUnixTimeMilliseconds(milliseconds)` | `milliseconds`: int | DateTime | Creates a UTC DateTime from a Unix milliseconds timestamp. |
+
+## DateTime properties
+
+| Property | Type | Description |
+| --- | --- | ---
+| `Ticks` | int | The complete tick count. |
+| `UnixTimestamp` | int | The number of whole seconds since the Unix epoch. |
+| `UnixTimestampMilliseconds` | int | The number of whole milliseconds since the Unix epoch. |
+| `Kind` | DateTimeKind | The kind of the DateTime: Utc, Local, or Unspecified. |
+| `Year` | int | The calendar year component. |
+| `Month` | int | The month component, 1-12. |
+| `Day` | int | The day-of-month component, 1-31. |
+| `DayOfWeek` | int | The day of week, 0-6, where 0 is Sunday. |
+| `Hour` | int | The hour component, 0-23. |
+| `Minute` | int | The minute component, 0-59. |
+| `Second` | int | The second component, 0-59. |
+| `Millisecond` | int | The millisecond component, 0-999. |
+| `Date` | DateTime | A new DateTime set to midnight of the same calendar day. |
+
+## DateTime methods
+
+| Method | Parameters | Returns | Description |
+| --- | --- | --- | ---
+| `Add(span)` | `span`: TimeSpan | DateTime | Returns a new DateTime offset by the supplied span. |
+| `AddMilliseconds(value)` | `value`: double | DateTime | Returns a new DateTime offset by a number of milliseconds. |
+| `AddSeconds(value)` | `value`: double | DateTime | Returns a new DateTime offset by a number of seconds. |
+| `AddMinutes(value)` | `value`: double | DateTime | Returns a new DateTime offset by a number of minutes. |
+| `AddHours(value)` | `value`: double | DateTime | Returns a new DateTime offset by a number of hours. |
+| `AddDays(value)` | `value`: double | DateTime | Returns a new DateTime offset by a number of days. |
+| `ToUniversalTime()` | none | DateTime | Converts this DateTime to UTC, preserving the instant. |
+| `ToLocalTime()` | none | DateTime | Converts this DateTime to local time, preserving the instant. |
+| `ToString()` | none | string | Returns a culture-invariant "yyyy-MM-dd HH:mm:ss" string. |
+| `ToString(format)` | `format`: string | string | Returns a string formatted with custom tokens. |
+
+## DateTime operators
+
+| Operator | Signature | Description |
+| --- | --- | ---
+| `dt + span` | DateTime + TimeSpan | Returns a DateTime advanced by the span. |
+| `dt - span` | DateTime - TimeSpan | Returns a DateTime moved back by the span. |
+| `a - b` | DateTime - DateTime | Returns the TimeSpan between two DateTime values. |
+| `a == b` | DateTime == DateTime | Returns true if the tick counts are equal. |
+| `a != b` | DateTime != DateTime | Returns true if the tick counts differ. |
+| `a < b` | DateTime &lt; DateTime | Tick-count less-than comparison. |
+| `a > b` | DateTime &gt; DateTime | Tick-count greater-than comparison. |
+| `a <= b` | DateTime &lt;= DateTime | Tick-count less-than-or-equal comparison. |
+| `a >= b` | DateTime &gt;= DateTime | Tick-count greater-than-or-equal comparison. |
+
+## Returns
+
+  Factory methods and operators return new `TimeSpan` or
+  `DateTime` value-type instances. Properties return the corresponding primitive or
+  enum value. Methods that perform arithmetic return a new instance and do not mutate the receiver.
+
+## Exceptions / Errors
+
+  - **Division by zero.** Dividing a  `TimeSpan` by `0.0` or dividing two spans where the divisor is zero throws a runtime exception.
+  - **Invalid Unix timestamp.** Very large positive or negative Unix timestamps can produce a `DateTime` outside the range supported by the platform `time_t` conversion.
+  - **Local-time ambiguity.**  `ToLocalTime` and `ToUniversalTime` rely on the host platform's local-time zone database. On hosts without valid zone data, the conversion may return the original ticks unchanged.
+
+## Remarks
+
+  `TimeSpan` and `DateTime` are registered as native structs, not
+  classes, so they are value types inside ShardScript. Assignment and parameter passing copy the underlying
+  tick fields rather than sharing a reference. Both types are immutable: every mutating-looking operation such
+  as `Add` or `Negate` returns a new instance.
+
+  The internal representation uses the same tick scale as .NET: 1 tick = 100 nanoseconds, 10 000 ticks = 1
+  millisecond, and 10 000 000 ticks = 1 second. This makes conversions to and from Unix timestamps
+  straightforward and avoids floating-point drift for whole-second values.
+
+  The custom format string for `DateTime.ToString(format)` supports the following
+  tokens. All other characters are copied to the output literally.
+
+| Token | Output |
+| --- | ---
+| `yyyy` | Four-digit year. |
+| `MM` | Two-digit month, 01-12. |
+| `dd` | Two-digit day, 01-31. |
+| `HH` | Two-digit 24-hour, 00-23. |
+| `mm` | Two-digit minute, 00-59. |
+| `ss` | Two-digit second, 00-59. |
+| `fff` | Three-digit millisecond, 000-999. |
+
+## Examples
+
+  Create durations, perform arithmetic, and format the current local time.
+
+// time_demo.shard
+```csharp
+using stdio;
+using time;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    span: TimeSpan = TimeSpan.FromSeconds(90.0);
+    println("TotalSeconds = " + span.TotalSeconds);
+    println("Minutes = " + span.Minutes);
+    println("Seconds = " + span.Seconds);
+
+    a: TimeSpan = TimeSpan.FromMinutes(10.0);
+    b: TimeSpan = TimeSpan.FromMinutes(5.0);
+    println("10min + 5min = " + (a + b).TotalMinutes + " min");
+
+    scaled: TimeSpan = a * 2.0;
+    println("10min * 2 = " + scaled.TotalMinutes + " min");
+
+    now: DateTime = DateTime.Now;
+    println("Now: " + now.ToString("yyyy-MM-dd HH:mm:ss"));
+
+    tomorrow: DateTime = now + TimeSpan.FromDays(1.0);
+    println("Tomorrow day: " + tomorrow.Day);
+
+    utc: DateTime = now.ToUniversalTime();
+    println("UTC year: " + utc.Year);
+}
+```
+
+## Category Summary
+
+| Feature | Members |
+| --- | ---
+| TimeSpan factories | FromTicks, FromMilliseconds, FromSeconds, FromMinutes, FromHours, FromDays |
+| TimeSpan properties | Ticks, TotalMilliseconds, TotalSeconds, TotalMinutes, TotalHours, TotalDays, Days, Hours, Minutes, Seconds, Milliseconds |
+| TimeSpan methods | Add, Subtract, Negate, Duration, ToString |
+| TimeSpan operators | +, -, *, /, unary -, ==, !=, &lt;, &gt;, &lt;=, &gt;= |
+| DateTime factories | Now, UtcNow, FromUnixTimeSeconds, FromUnixTimeMilliseconds |
+| DateTime properties | Ticks, UnixTimestamp, UnixTimestampMilliseconds, Kind, Year, Month, Day, DayOfWeek, Hour, Minute, Second, Millisecond, Date |
+| DateTime methods | Add, AddMilliseconds, AddSeconds, AddMinutes, AddHours, AddDays, ToUniversalTime, ToLocalTime, ToString |
+| DateTime operators | + TimeSpan, - TimeSpan, - DateTime, ==, !=, &lt;, &gt;, &lt;=, &gt;= |
+| Enum | DateTimeKind |
+
+## See also
+
+  - [`library-building/struct-symbol-builder`](/library-building/reference/struct-symbol-builder) — how native structs such as  `TimeSpan` and `DateTime` are registered.
+  - [`library-building/enum-symbol-builder`](/library-building/reference/enum-symbol-builder) — how the  `DateTimeKind` enum is registered.
+  - [`library-building/operator-symbol-builder`](/library-building/reference/operator-symbol-builder) — how operator overloads are bound to native callbacks.
+
+## Source
+
+  The native implementation of `shard.time` is in
+  `ShardScript.Framework/system/time.shard.cpp`. View the source on GitHub:
+  `https://github.com/Rikitav/ShardScript/blob/main/ShardScript.Framework/system/time.shard.cpp`.

@@ -1,0 +1,211 @@
+---
+title: switch Statements
+---
+
+## Summary
+
+  A `switch` statement selects a statement block to execute by comparing a
+  scrutinee expression against a series of case patterns. Patterns may be constant values, type
+  patterns (`is Type`), or type patterns that bind a variable
+  (`is Type varName`). A `default` block runs when no
+  other pattern matches.
+
+## Syntax
+
+  Write `switch` followed by the parenthesized scrutinee, then a brace-delimited
+  list of clauses. Each clause starts with `case` or `default`,
+  followed by a colon, then a statement block.
+
+// switch_statement_syntax.shard
+```csharp
+switch (scrutinee)
+{
+    case constantPattern:
+    {
+        // statements
+        break;
+    }
+
+    case is Type:
+    {
+        // statements
+        break;
+    }
+
+    case is Type varName:
+    {
+        // statements
+        break;
+    }
+
+    default:
+    {
+        // statements
+        break;
+    }
+}
+```
+
+## Parameters / Arguments
+
+| Part | Required | Description |
+| --- | --- | ---
+| scrutinee | Yes | The expression whose value is matched. It is evaluated exactly once. |
+| constant pattern | Yes, per case | A constant expression compared against the scrutinee using equality. The first matching case runs. |
+| is Type | Yes, per case | A type pattern that matches when the scrutinee is an instance of Type or a derived type. |
+| is Type varName | Yes, per case | A type pattern that matches the same way and binds the casted instance to varName inside the case block. |
+| default | No | The catch-all clause. It runs when no case pattern matches. |
+| case body | Yes | A brace-delimited statement block executed when the case matches. |
+
+## Returns
+
+  The `switch` statement itself has no value. Execution continues with the
+  statement that follows the entire `switch` block after a matched case body
+  completes or after a `break` statement.
+
+## Exceptions / Errors
+
+  - **Missing braces or colon** — Omitting  `{`, `}`, or `:`  after a case pattern produces a parser error.
+  - **No matching case without default** — If the scrutinee does not match any pattern and there is no `default` clause, the `switch` statement does nothing.
+  - **Type pattern on value type** — A type pattern such as `is int` is rejected; type patterns work only with reference types.
+  - **Binding variable shadows an outer name** — The binder rejects an `is Type varName` case when `varName`  conflicts with an existing local or parameter in the enclosing scope.
+  - **break outside switch or loop** — A  `break` statement is allowed inside a `switch`  case body or inside a loop, but not at top level.
+
+## Remarks
+
+  **No implicit fallthrough.** Each case body is independent. The compiler emits a
+  jump to the end of the `switch` after every case block, so control does not
+  flow from one case into the next. You can still write `break` explicitly to
+  exit early.
+
+  **Sequential matching.** Cases are tested in source order and the first matching case
+  runs. Place the most specific type patterns before less specific ones; for example, put
+  `is Cat` before `is Animal` when both could match.
+
+  **Single evaluation.** The scrutinee is evaluated once and stored in a temporary
+  compiler variable. Case patterns are compared against that stored value, so side effects in the
+  scrutinee expression do not repeat.
+
+  **Constant patterns and custom equality.** Constant patterns are compared using
+  equality. For primitive types the compiler emits a direct comparison. For non-primitive value types
+  whose pattern type equals the scrutinee type, the compiler resolves a custom
+  `operator ==` if one exists.
+
+  **Type patterns do not match null.** An `is Type` or
+  `is Type varName` pattern treats `null` as a
+  non-matching value and continues to the next case.
+
+  **Scope of the binding variable.** A variable introduced by
+  `is Type varName` is scoped to its case body only. It is not visible in
+  other cases or after the `switch` statement.
+
+## Examples
+
+  **Matching an integer code.**
+
+// switch_statement_int.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    day: int = 2;
+
+    switch (day)
+    {
+        case 1:
+        {
+            println("Monday");
+            break;
+        }
+
+        case 2:
+        {
+            println("Tuesday");
+            break;
+        }
+
+        case 3:
+        {
+            println("Wednesday");
+            break;
+        }
+
+        default:
+        {
+            println("Weekend");
+            break;
+        }
+    }
+}
+```
+
+  **Matching with type patterns.**
+
+// switch_statement_is_pattern.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Animal
+{
+    public func Speak() -> void
+    {
+        println("...");
+    }
+}
+
+public class Dog : Animal
+{
+    public func Bark() -> void
+    {
+        println("woof");
+    }
+}
+
+public class Cat : Animal
+{
+    public func Meow() -> void
+    {
+        println("meow");
+    }
+}
+
+public static func MakeSound(animal: Animal) -> void
+{
+    switch (animal)
+    {
+        case is Dog dog:
+        {
+            dog.Bark();
+            break;
+        }
+
+        case is Cat cat:
+        {
+            cat.Meow();
+            break;
+        }
+
+        default:
+        {
+            animal.Speak();
+            break;
+        }
+    }
+}
+```
+
+## See also
+
+  - [`syntax/switch-expressions`](/syntax/control-flow/switch-expressions) — expression-oriented pattern matching that returns a value.
+  - [`syntax/conditionals`](/syntax/control-flow/conditionals) — `if` and  `unless` statements for boolean branching.
+
+## Source
+
+  Parsing and binding live in `ShardScript/src/parsing/SourceParser.cpp` and
+  `ShardScript/src/semantic/ExpressionBinder.cpp`. Bytecode emission is in
+  `ShardScript/src/compilation/AbstractEmiter.cpp`.

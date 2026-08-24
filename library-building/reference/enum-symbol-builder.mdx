@@ -1,0 +1,205 @@
+---
+title: EnumSymbol Builder
+---
+
+## Summary
+
+  The `SymbolBuilder<EnumSymbol>` API registers enum types into the ShardScript
+  semantic model from a native C++ library. It supports both plain enums and flag enums through
+  `AddEnum`, `AddValue`, and `SetFlags`.
+
+## Syntax
+
+  Enums are created from a `SymbolBuilder<NamespaceSymbol>`. The returned enum
+  builder exposes two chainable registration methods.
+
+```cpp
+SymbolBuilder<EnumSymbol> SymbolBuilder<NamespaceSymbol>::AddEnum(
+    const std::wstring& name,
+    bool isFlags = false,
+    SymbolAccesibility access = SymbolAccesibility::Public);
+
+SymbolBuilder<EnumSymbol>& SymbolBuilder<EnumSymbol>::SetFlags(bool value = true);
+
+SymbolBuilder<EnumSymbol>& SymbolBuilder<EnumSymbol>::AddValue(
+    const std::wstring& name,
+    std::int64_t value);
+```
+
+## Parameters / Arguments
+
+| Parameter | Type | Description |
+| --- | --- | ---
+| `name` | `std::wstring` | The ShardScript identifier for the enum. It is resolved under the containing namespace, so the full name becomes Namespace.Name. |
+| `isFlags` | `bool` | When true, the enum is treated as a flags enum. This enables bitwise operators and the HasFlag instance method. Defaults to false. |
+| `access` | `SymbolAccesibility` | Visibility of the enum type. Use ACS_PUBLIC for public APIs. Defaults to SymbolAccesibility::Public. |
+| `AddValue name` | `std::wstring` | The identifier of the enum value. It is declared as a member of the enum and accessed as EnumName.Value. |
+| `AddValue value` | `std::int64_t` | The underlying integer value stored for the member. Use explicit values for flags enums to avoid accidental collisions. |
+
+## Returns
+
+  `AddEnum` returns a `SymbolBuilder<EnumSymbol>` by value
+  that owns the newly created `EnumSymbol`. `SetFlags` and
+  `AddValue` return a reference to the same builder so calls can be chained. The
+  builder also converts implicitly to `EnumSymbol*`, which is useful when passing the
+  enum as a parameter type to methods.
+
+## Exceptions / Errors
+
+  - **Duplicate member name** — Calling  `AddValue` with a name that already exists on the enum produces a semantic duplicate-declaration error.
+  - **Conflicting flag values** — For flags enums, values that overlap unintentionally cause surprising `HasFlag` results. Each flag should be a distinct power of two, and the zero value should represent the empty combination.
+  - **Name collision in the namespace** — The enum name must not conflict with another type or namespace member already declared in the same scope.
+  - **Accessibility mismatch** — An enum registered with  `ACS_PRIVATE` cannot be referenced from ShardScript code outside its visibility boundary, even though the native registration succeeds.
+
+## Remarks
+
+<Info title="Native library shape">
+A ShardScript native library is any shared library (`.dll` on Windows, `.so` on Linux, `.dylib` on macOS) that exports the two C-linkage symbols `ShardLib_GetMetadata` and `ShardLib_EntryPoint`. It can be built from one or many C++ source files, live inside `ShardScript.Framework` or in a completely separate project, and links against the ShardScript runtime shared library using headers from `ShardScript/include`. For the full registration contract, see `native-library-overview.mdx`.
+</Info>
+
+  **Storage and representation.** An `EnumSymbol` is a value type backed
+  by a single `std::int64_t`. Its memory layout is fixed, so it is passed and returned
+  by value just like other primitive value types. In a native callback you read an enum argument with
+  `AsInteger()` and return an enum value with
+  `context.Collector.FromValue(value)`.
+
+  **Flag semantics.** Setting `IsFlags` to true only changes how the
+  runtime presents the enum. The ShardScript compiler and runtime inject bitwise
+  `|`, `&`, equality, and
+  `HasFlag` helpers for every enum, but flag enums are expected to use power-of-two
+  values so combinations compose correctly. Always include a `None` or
+  `Zero` member with value `0` for the empty combination.
+
+  **Member generation.** Each `AddValue` call creates a
+  `FieldSymbol` attached to the enum. You do not need to register operators or methods
+  yourself; the runtime binds `ToString` through `IPrintable`,
+  equality, bitwise operators, and `HasFlag` automatically when the enum is finalized.
+
+<Info>
+Keep flags values as explicit powers of two. Do not rely on auto-increment for flag enums; sequential
+  values such as `1`, `2`, `3` make
+  `HasFlag` return true for combinations that were never intended.
+</Info>
+
+## Examples
+
+  **Register a plain enum and a flags enum.** This native library defines a
+  `net` namespace containing a status-code enum and a file-access flags enum.
+
+// net.shard.cpp
+```cpp
+#include <ShardScript.hpp>
+
+using namespace shard;
+
+SHARDLIB_GETMETADATA
+{
+    lib.Name        = L"shard.net";
+    lib.Description = L"Network and file-access enums";
+    lib.Version     = L"1.0.0";
+}
+
+static ObjectInstance* open_file(const CallState& context)
+{
+    std::int64_t flagsValue = context.Args[0]->AsInteger();
+
+    // Reject unknown flag bits for this example.
+    std::int64_t knownBits = 1 | 2 | 4 | 8;
+    if ((flagsValue & ~knownBits) != 0)
+    {
+        throw std::runtime_error("Unknown file flag bits");
+    }
+
+    // The real implementation would map the flags to OS open() flags here.
+    return context.Collector.FromValue(0);
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> net(context, L"net");
+
+    SymbolBuilder<EnumSymbol> httpStatus = net.AddEnum(L"HttpStatus", false, ACS_PUBLIC);
+    httpStatus
+        .AddValue(L"Continue", 100)
+        .AddValue(L"Ok", 200)
+        .AddValue(L"NotFound", 404)
+        .AddValue(L"ServerError", 500);
+
+    SymbolBuilder<EnumSymbol> fileFlags = net.AddEnum(L"FileFlags", true, ACS_PUBLIC);
+    fileFlags
+        .SetFlags(true)
+        .AddValue(L"None", 0)
+        .AddValue(L"Read", 1)
+        .AddValue(L"Write", 2)
+        .AddValue(L"Execute", 4)
+        .AddValue(L"Shared", 8);
+
+    net.AddMethod(L"Open", TYPE_INT, LINK_STATIC, ACS_PUBLIC)
+        .AddParameter(L"flags", fileFlags.Get())
+        .SetCallback(&open_file);
+}
+```
+
+  ShardScript usage:
+
+// app.shard
+```csharp
+using stdio;
+using net;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    status: HttpStatus = HttpStatus.Ok;
+    println(status);
+
+    flags: FileFlags = FileFlags.Read | FileFlags.Write;
+
+    if (flags.HasFlag(FileFlags.Read))
+    {
+        println("read requested");
+    }
+
+    if (flags.HasFlag(FileFlags.Execute))
+    {
+        println("execute requested");
+    }
+
+    handle: int = net.Open(flags);
+    println(handle);
+}
+```
+
+  **Reading an enum argument in a callback.** The enum is stored as an integer, so the callback
+  can inspect it directly before forwarding to native code.
+
+```cpp
+static ObjectInstance* describe_status(const CallState& context)
+{
+    std::int64_t status = context.Args[0]->AsInteger();
+
+    if (status == 200)
+    {
+        return context.Collector.FromValue(L"OK");
+    }
+
+    if (status == 404)
+    {
+        return context.Collector.FromValue(L"Not Found");
+    }
+
+    return context.Collector.FromValue(L"Other");
+}
+```
+
+## See also
+
+  - [`library-building/class-symbol-builder`](/library-building/reference/class-symbol-builder) — registering classes that consume enums.
+  - [`library-building/reading-arguments`](/library-building/how-to/reading-arguments) — reading enum values as integers in callbacks.
+  - [`library-building/headers-quick-reference`](/library-building/reference/headers-quick-reference) — header locations.
+
+## Source
+
+  The native side of this API is implemented in `shard/semantic/SymbolBuilder.hpp`.
+  View the source on GitHub: `https://github.com/Rikitav/ShardScript/blob/main/ShardScript/include/shard/semantic/SymbolBuilder.hpp`.
