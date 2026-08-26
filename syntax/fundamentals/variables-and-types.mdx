@@ -33,6 +33,13 @@ ShardScript is a **statically and strongly typed** language: every local binding
 | `Type name = value;` | Rejected. C-style declarations are not valid syntax. |
 | `var name = value;` | Rejected. The var keyword is not allowed. |
 
+  **Nullable type annotations.** A type annotation may be suffixed with `?` to form a
+  nullable type. A variable of type `T?` can hold values of `T` or the special
+  value `null`. The `?` modifier is parsed as part of the type, so `name: T?`
+  and `name: T` are distinct types. Assigning a non-null `T` value to a
+  `T?` variable is allowed; assigning `null` to a non-nullable `T`
+  variable is not.
+
 ## When to use it
 
   Choose the form that makes the code easiest to verify at a glance. The two forms are semantically equivalent — the compiler generates the same bindings and type checks either way.
@@ -203,6 +210,32 @@ public static func Main() -> void
     println(inner);
 
     // int outer = 99;      // ERROR: a symbol named 'outer' already exists
+}
+```
+
+  **Nullable variables.**
+
+// nullable_types.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    // A nullable string can hold a value or null.
+    name: string? = "ShardScript";
+    println(name);
+
+    name = null;
+    println(name == null);   // true
+
+    // A nullable int can hold an integer or null.
+    count: int? = 42;
+    println(count);
+
+    count = null;
+    println(count == null);   // true
 }
 ```
 

@@ -50,6 +50,11 @@ shard::ObjectInstance* Callback(const shard::CallState& context);
 | `AddParameter` | `name`, `type` | `SymbolBuilder<ConstructorSymbol>&` | The parameter name as it appears in ShardScript source and its `TypeSymbol*`. |
 | `SetCallback` | `callback` | `SymbolBuilder<ConstructorSymbol>&` | A `MethodSymbolDelegate` function pointer or lambda that the runtime invokes to initialize the instance. |
 | `AddTypeParameter` | `name` | `SymbolBuilder<TypeParameterSymbol>` | The name of a generic type parameter for a generic constructor. |
+| `SetMayThrow(value)` | `value` (default `true`) | `SymbolBuilder<ConstructorSymbol>&` | Marks the constructor as potentially throwing an exception. |
+| `SetMutatesInstance(value)` | `value` (default `true`) | `SymbolBuilder<ConstructorSymbol>&` | Marks the constructor as writing instance state of `this`. |
+| `SetMutatesStatic(value)` | `value` (default `true`) | `SymbolBuilder<ConstructorSymbol>&` | Marks the constructor as writing static state of the enclosing type. |
+| `SetMutatesArguments(value)` | `value` (default `true`) | `SymbolBuilder<ConstructorSymbol>&` | Marks the constructor as writing through by-ref/out parameters (reserved). |
+| `SetHasUnknownSideEffects(value)` | `value` (default `true`) | `SymbolBuilder<ConstructorSymbol>&` | Marks the constructor as having side effects the compiler cannot analyze. |
 
 ## Returns
 
@@ -94,6 +99,13 @@ A ShardScript native library is any shared library (`.dll` on Windows, `.so` on 
   **Generic constructors.** When `AddTypeParameter` is used, the concrete
   type substitutions are available at runtime through `context.Frame->TypeArguments` in
   the order in which the parameters were declared.
+
+  **Effect summary setters.** Because the compiler cannot inspect native C++ constructor
+  bodies, you can explicitly declare the constructor's side effects with `SetMayThrow`,
+  `SetMutatesInstance`, `SetMutatesStatic`,
+  `SetMutatesArguments`, and `SetHasUnknownSideEffects`. These bits are
+  merged into callers' effect summaries and influence compiler warnings. All setters default to
+  `true` and return the same constructor builder for chaining.
 
   **Field handles must be captured outside the entry point.** Store the
   `FieldSymbol*` returned by `AddField` in a static variable so it

@@ -58,6 +58,12 @@ SHARDLIB_ENTRYPOINT
 | `AddTypeParameter(name)` | `name` | `SymbolBuilder<TypeParameterSymbol>` | Adds a generic type parameter to the method. |
 | `IsImplementationOf(abstractMethod)` | `abstractMethod` | `SymbolBuilder<MethodSymbol>&` | Marks this method as the concrete implementation of an interface or abstract method. |
 | `DeclareGlobal()` | None | `SymbolBuilder<MethodSymbol>&` | Registers the method so it can be invoked without a namespace prefix. |
+| `SetMayThrow(value)` | `value` (default `true`) | `SymbolBuilder<MethodSymbol>&` | Marks the method as potentially throwing an exception. |
+| `SetThrowsType(type)` | `type` (`TypeSymbol*`) | `SymbolBuilder<MethodSymbol>&` | Marks the method as throwing a specific managed exception type; sets `MayThrow` and adds the type to `ThrownTypes`. |
+| `SetMutatesInstance(value)` | `value` (default `true`) | `SymbolBuilder<MethodSymbol>&` | Marks the method as writing instance state of `this`. |
+| `SetMutatesStatic(value)` | `value` (default `true`) | `SymbolBuilder<MethodSymbol>&` | Marks the method as writing static state of the enclosing type. |
+| `SetMutatesArguments(value)` | `value` (default `true`) | `SymbolBuilder<MethodSymbol>&` | Marks the method as writing through by-ref/out parameters (reserved). |
+| `SetHasUnknownSideEffects(value)` | `value` (default `true`) | `SymbolBuilder<MethodSymbol>&` | Marks the method as having side effects the compiler cannot analyze (e.g. delegate or extern calls). |
 
 ## Returns
 
@@ -67,6 +73,12 @@ SHARDLIB_ENTRYPOINT
 | `SetCallback` | `SymbolBuilder<MethodSymbol>&` | Returns the same method builder. |
 | `IsImplementationOf` | `SymbolBuilder<MethodSymbol>&` | Returns the same method builder. |
 | `DeclareGlobal` | `SymbolBuilder<MethodSymbol>&` | Returns the same method builder. |
+| `SetMayThrow` | `SymbolBuilder<MethodSymbol>&` | Returns the same method builder. |
+| `SetThrowsType` | `SymbolBuilder<MethodSymbol>&` | Returns the same method builder. |
+| `SetMutatesInstance` | `SymbolBuilder<MethodSymbol>&` | Returns the same method builder. |
+| `SetMutatesStatic` | `SymbolBuilder<MethodSymbol>&` | Returns the same method builder. |
+| `SetMutatesArguments` | `SymbolBuilder<MethodSymbol>&` | Returns the same method builder. |
+| `SetHasUnknownSideEffects` | `SymbolBuilder<MethodSymbol>&` | Returns the same method builder. |
 | `AddTypeParameter` | `SymbolBuilder<TypeParameterSymbol>` | Returns a new builder for the type parameter. Call `.Get()` to retrieve the `TypeParameterSymbol*`. |
 | `.Get()` | `MethodSymbol*` or `TypeParameterSymbol*` | Retrieves the raw symbol pointer from the builder. |
 
@@ -111,6 +123,17 @@ shard::ObjectInstance* Callback(const shard::CallState& context);
 
   **Global methods.** Calling `DeclareGlobal()` on a namespace-level method
   makes it callable without the namespace prefix. Use sparingly to avoid polluting the global namespace.
+
+  **Effect summary setters.** ShardScript's flow analyzer computes effect bits
+  (`MayThrow`, `MutatesInstance`, `MutatesStatic`,
+  `MutatesArguments`, `HasUnknownSideEffects`) and a `ThrownTypes`
+  set by scanning method bodies. For native methods implemented in C++, the analyzer cannot see the
+  body, so you can declare the expected effects explicitly with the fluent setters. These bits feed
+  compiler warnings (for example, an unguarded call to a method marked `MayThrow` produces
+  a warning) and future nullable/definite-assignment checks. All five boolean setters default to
+  `true` and return the same method builder for chaining. Use
+  `SetThrowsType(type)` when the native callback raises a specific managed exception
+  type; it also sets `MayThrow` so the warning can name the type.
 
 <Info>
 Keep cross-library symbol lookups lazy. If a callback uses types from another native library, look them up

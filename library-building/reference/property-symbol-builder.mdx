@@ -52,6 +52,12 @@ nameProp.AddSetter().SetCallback(&set_name);
 | `AddSetter()` | Adds a setter accessor to the property. The callback receives the new value as its last argument and returns nullptr. |
 | `AddBackingField()` | Creates a compiler-managed field that backs the property. Returns a SymbolBuilder&lt;FieldSymbol&gt;; call .Get() to obtain the FieldSymbol* for runtime read/write. |
 | `SetCallback(callback)` | Binds a native callback to the most recently added accessor (getter or setter). |
+| `SetMayThrow(value)` | Marks the current accessor as potentially throwing an exception. Defaults to `true`. |
+| `SetThrowsType(type)` | Marks the current accessor as throwing a specific managed exception type; sets `MayThrow` and adds the type to `ThrownTypes`. |
+| `SetMutatesInstance(value)` | Marks the current accessor as writing instance state of `this`. Defaults to `true`. |
+| `SetMutatesStatic(value)` | Marks the current accessor as writing static state of the enclosing type. Defaults to `true`. |
+| `SetMutatesArguments(value)` | Marks the current accessor as writing through by-ref/out parameters (reserved). Defaults to `true`. |
+| `SetHasUnknownSideEffects(value)` | Marks the current accessor as having side effects the compiler cannot analyze. Defaults to `true`. |
 
 ## Returns
 
@@ -105,6 +111,17 @@ A ShardScript native library is any shared library (`.dll` on Windows, `.so` on 
   provide matching accessors. Interface property registration uses the same `AddProperty`
   call, but without `SetCallback`; the accessor bodies are supplied by the implementing
   class or struct.
+
+  **Accessor effect summaries.** Property getters and setters are represented as
+  `AccessorSymbol` symbols and participate in the same side-effect analysis as methods.
+  Because native callback bodies are invisible to the ShardScript flow analyzer, you can declare an
+  accessor's effects explicitly with `SetMayThrow`, `SetMutatesInstance`,
+  `SetMutatesStatic`, `SetMutatesArguments`, and
+  `SetHasUnknownSideEffects`. These bits are merged into callers' effect summaries and
+  influence compiler warnings. All five boolean setters default to `true` and return the same
+  accessor builder for chaining. Use `SetThrowsType(type)` when an accessor callback
+  raises a specific managed exception type; it also sets `MayThrow` so the warning can
+  name the type.
 
 <Info>
 Prefer `AddBackingField` when the property simply stores and returns a value. Use

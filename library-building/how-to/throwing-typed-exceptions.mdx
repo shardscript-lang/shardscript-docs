@@ -126,7 +126,30 @@ static ObjectInstance* mylib_DoWork(const CallState& context)
 }
 ```
 
-  **6. Catch the specific type in ShardScript.**
+  **6. Declare the exception type on the native method.**
+
+  Registering the type is not enough for the compiler's flow analyzer to warn ShardScript callers.
+  Attach `SetThrowsType` to every method or accessor that can raise the managed exception
+  so the analyzer can emit precise call-site diagnostics such as
+  `Call to 'DoWork' may throw 'MyException'`.
+
+// mylib.shard.cpp
+```cpp
+SHARDLIB_ENTRYPOINT
+{
+    // ... register MyException and its properties ...
+
+    ns.AddClass(L"MyWorker", ACS_PUBLIC, LINK_STATIC, [](SymbolBuilder<ClassSymbol> workerClass)
+    {
+        workerClass.AddMethod(L"DoWork", TYPE_INT, LINK_STATIC, ACS_PUBLIC)
+            .AddParameter(L"value", TYPE_INT)
+            .SetThrowsType(g_myExceptionType)
+            .SetCallback(&mylib_DoWork);
+    });
+}
+```
+
+  **7. Catch the specific type in ShardScript.**
 
 // demo.shard
 ```csharp

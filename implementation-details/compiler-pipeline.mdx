@@ -54,11 +54,19 @@ ApplicationDomain  =  Program image  +  VirtualMachine  +  EventLoop  +  Garbage
 
 | Pass | Component | Responsibility |
 | --- | --- | ---
-| 1. Declarations | DeclarationCollector | Register every declared type, method, field, and parameter into the SymbolTable. |
+| 1. Declarations | DeclarationCollector | Register every declared type, method, field, parameter, and lambda into the SymbolTable, including lambdas nested inside chained member-access and invocation expressions. |
 | 2. Type binding | TypeBinder | Resolve type references (generics, base interfaces) to TypeSymbols. |
 | 3. Expression binding | ExpressionBinder | Bind each expression to its symbol and type; resolve overloads and member access. |
 | 4. Validation | SemanticValidator | Enforce the type rules and emit compile-time diagnostics. |
-| 5. Flow analysis | FlowAnalyzer | Verify definite assignment, reachable returns, and valid break/continue contexts. |
+| 5. Flow analysis | FlowAnalyzer | Verify definite assignment, reachable returns, valid break/continue contexts, and side-effect/mutation summaries. |
+
+  **Lambda discovery.** `DeclarationCollector` creates an anonymous
+  `MethodSymbol` for every `lambda` expression and records it in the
+  `SymbolTable`. It deliberately does not visit the lambda body; the parameter
+  scope and statement binding are left for `ExpressionBinder`. To ensure lambdas
+  inside fluent chains such as `obj.Foo(lambda {}).Bar()` are discovered,
+  `DeclarationCollector` traverses the `PreviousExpression` receiver
+  chains of member-access and invocation nodes before descending into argument lists.
 
   **Async lowering.** Before bytecode is emitted, `async` methods are
   rewritten into compiler-generated state machines so that `await` can suspend and
@@ -303,6 +311,232 @@ public static func Main() -> void
 {
     // ERROR: Break statement must be inside a loop or switch
     break;
+}
+```
+
+## Side-effect and mutation analysis
+
+  The same flow-analysis pass also performs a conservative side-effect scan over every method,
+  constructor, property accessor, operator, and lambda body. It records whether the member:
+
+| Effect | Meaning |
+| --- | --- |
+| `MayThrow` | Contains an uncaught `throw` or calls something that may throw outside a `try/catch` guard. |
+| `ThrownTypes` | A set of `TypeSymbol*` values recording the specific exception types that may escape the member uncaught. |
+| `MutatesInstance` | Writes an instance field, property, or indexer of `this`. |
+| `MutatesStatic` | Writes a static field or property of the enclosing type. |
+| `MutatesArguments` | Writes through a `by-ref` or `out` parameter (reserved for future use). |
+| `HasUnknownSideEffects` | Calls a delegate, virtual/interface target, or unannotated external method. |
+
+  The analyzer builds an intra-module call graph while scanning bodies. When a member calls another
+  member, the callee's effects are merged into the caller unless the call is guarded by a
+  `catch` clause, in which case only mutations propagate and the throw effect is suppressed.
+  A fixpoint propagation step (`PropagateEffects`) then cascades effects backward through the
+  call graph until the summaries stabilize.
+
+  After propagation, the compiler emits a warning for every call site where the callee's
+  `ThrownTypes` are not fully covered by the active `try/catch` filters:
+
+```text
+Call to 'MethodName' may throw 'RuntimeException'
+```
+
+  If the callee may throw but its specific type set is empty or unknown, the analyzer falls back to:
+
+```text
+Call to 'MethodName' may throw an exception
+```
+
+  A call is considered guarded when the enclosing `try/catch` declares a filter type
+  to which the thrown type is assignable — an exact match, a base class, or an implemented interface
+  such as `IThrowable`. Only the exception types that are not caught at the call site
+  propagate to the caller and appear in its warning.
+
+  **Effect summaries are attached to symbols.** Every `MethodSymbol`,
+  `ConstructorSymbol`, `AccessorSymbol`, and
+  `OperatorSymbol` carries a `MethodEffectSummary` in its
+  `EffectSummary` field. Native libraries can pre-populate these bits through the
+  `SymbolBuilder` fluent setters (`SetMayThrow`,
+  `SetMutatesInstance`, and so on) when registering symbols from C++. For native code
+  that throws a specific managed type, use `SetThrowsType(TypeSymbol*)` on methods and
+  accessors; it sets `MayThrow` and adds the type to `ThrownTypes` so
+  the flow analyzer can produce precise call-site warnings.
+
+<Info>
+The side-effect scan is conservative: it may flag calls as potentially throwing even when the
+  runtime path in a specific program cannot throw, and it may report mutations for any write to a
+  field or indexer regardless of whether the value actually changes. The goal is to catch
+  observable side effects early, not to prove their absence.
+</Info>
+
+  **Warning for an unguarded call to a throwing helper.**
+
+// throw_warning.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Helper
+{
+    public func Thrower() -> void
+    {
+        throw new RuntimeException();
+    }
+}
+
+public static func Main() -> void
+{
+    helper: Helper = new Helper();
+
+    // WARNING: Call to 'Thrower' may throw 'RuntimeException'
+    helper.Thrower();
+
+    println("done");
+}
+```
+
+  **No warning when the call is guarded by the exact type.**
+
+// throw_guarded.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Helper
+{
+    public func Thrower() -> void
+    {
+        throw new RuntimeException();
+    }
+}
+
+public static func Main() -> void
+{
+    helper: Helper = new Helper();
+
+    try
+    {
+        helper.Thrower();   // OK: RuntimeException is caught below
+    }
+    catch (e: RuntimeException)
+    {
+    }
+
+    println("done");
+}
+```
+
+  **No warning when the call is guarded by a base type or interface.**
+
+// throw_guarded_base.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Helper
+{
+    public func Thrower() -> void
+    {
+        throw new RuntimeException();
+    }
+}
+
+public static func Main() -> void
+{
+    helper: Helper = new Helper();
+
+    try
+    {
+        helper.Thrower();   // OK: IThrowable catches every throwable
+    }
+    catch (e: IThrowable)
+    {
+    }
+
+    println("done");
+}
+```
+
+  **Partial warning when only some thrown types are caught.**
+
+// throw_partial.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class NetworkException : RuntimeException
+{
+}
+
+public class TimeoutException : NetworkException
+{
+}
+
+public class Helper
+{
+    public func Thrower() -> void
+    {
+        if (true)
+        {
+            throw new TimeoutException();
+        }
+        else
+        {
+            throw new RuntimeException();
+        }
+    }
+}
+
+public static func Main() -> void
+{
+    helper: Helper = new Helper();
+
+    try
+    {
+        // WARNING: Call to 'Thrower' may throw 'RuntimeException'
+        helper.Thrower();
+    }
+    catch (e: TimeoutException)
+    {
+    }
+}
+```
+
+  **Mutation tracking through the call graph.**
+
+// mutation_propagation.shard
+```csharp
+using stdio;
+
+namespace demo;
+
+public class Counter
+{
+    public Value: int;
+
+    public func Inc() -> void
+    {
+        this.Value += 1;
+    }
+
+    public func Bump() -> void
+    {
+        this.Inc();
+    }
+}
+
+public static func Main() -> void
+{
+    c: Counter = new Counter();
+    c.Bump();
+
+    // Bump is recorded as mutating instance state because it calls Inc,
+    // which writes this.Value.
+    println(c.Value);   // 1
 }
 ```
 

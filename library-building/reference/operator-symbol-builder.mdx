@@ -68,6 +68,11 @@ type.AddCastOperator(TYPE_STRING, LINK_STATIC)
 | --- | ---
 | `AddParameter(name, type)` | Adds one operand parameter. The order must match the operand order in ShardScript source. |
 | `SetCallback(callback)` | Attaches the native callback that implements the operator. Required for the operator to run. |
+| `SetMayThrow(value)` | Marks the operator as potentially throwing an exception. Defaults to `true`. |
+| `SetMutatesInstance(value)` | Marks the operator as writing instance state of `this`. Defaults to `true`. |
+| `SetMutatesStatic(value)` | Marks the operator as writing static state of the enclosing type. Defaults to `true`. |
+| `SetMutatesArguments(value)` | Marks the operator as writing through by-ref/out parameters (reserved). Defaults to `true`. |
+| `SetHasUnknownSideEffects(value)` | Marks the operator as having side effects the compiler cannot analyze. Defaults to `true`. |
 
   **Common operator token constants**
 
@@ -93,6 +98,11 @@ type.AddCastOperator(TYPE_STRING, LINK_STATIC)
 | `AddCastOperator` | `SymbolBuilder<OperatorSymbol>` | A builder for an as cast operator symbol. |
 | `AddParameter` | `SymbolBuilder<OperatorSymbol>&` | The same builder, for fluent chaining. |
 | `SetCallback` | `SymbolBuilder<OperatorSymbol>&` | The same builder, for fluent chaining. |
+| `SetMayThrow` | `SymbolBuilder<OperatorSymbol>&` | The same builder, for fluent chaining. |
+| `SetMutatesInstance` | `SymbolBuilder<OperatorSymbol>&` | The same builder, for fluent chaining. |
+| `SetMutatesStatic` | `SymbolBuilder<OperatorSymbol>&` | The same builder, for fluent chaining. |
+| `SetMutatesArguments` | `SymbolBuilder<OperatorSymbol>&` | The same builder, for fluent chaining. |
+| `SetHasUnknownSideEffects` | `SymbolBuilder<OperatorSymbol>&` | The same builder, for fluent chaining. |
 | `callback` | `shard::ObjectInstance*` | The native callback must return the boxed operator result. |
 
 ## Exceptions / Errors
@@ -118,6 +128,13 @@ type.AddCastOperator(TYPE_STRING, LINK_STATIC)
   callback receives the source value as `context.Args[0]` and must return a value of the
   target type. You can also call `AddOperator(TokenType::AsOperator, targetType, ...)`
   directly.
+
+  **Effect summary setters.** Native operator callbacks are opaque to the ShardScript
+  flow analyzer, so you can declare side effects explicitly with `SetMayThrow`,
+  `SetMutatesInstance`, `SetMutatesStatic`,
+  `SetMutatesArguments`, and `SetHasUnknownSideEffects`. These bits are
+  merged into callers' effect summaries and influence compiler diagnostics. All five setters default
+  to `true` and return the same operator builder for chaining.
 
 <Info title="Native library shape">
 A ShardScript native library is any shared library (`.dll` on Windows, `.so` on Linux, `.dylib` on macOS) that exports the two C-linkage symbols `ShardLib_GetMetadata` and `ShardLib_EntryPoint`. It can be built from one or many C++ source files, live inside `ShardScript.Framework` or in a completely separate project, and links against the ShardScript runtime shared library using headers from `ShardScript/include`. For the full registration contract, see `native-library-overview.mdx`.

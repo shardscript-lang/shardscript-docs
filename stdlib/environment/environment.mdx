@@ -6,18 +6,20 @@ title: Environment
 
   The `shard.environment` library exposes a static `Environment`
   class in the `environment` namespace for reading and writing the current process's
-  operating-system environment variables. Reads return an empty string when a variable is absent, and writes
-  affect only the calling process and any child processes launched afterward.
+  operating-system environment variables and for reading the command-line script arguments passed to the
+  running program. Reads return an empty string when a variable is absent, writes affect only the calling
+  process and any child processes launched afterward, and script arguments are surfaced as a `string[]`.
 
 ## Syntax
 
-  Access is provided through a static delimiter operator and two explicit static methods:
+  Access is provided through a static delimiter operator, two explicit static methods, and one static read-only property:
 
 | Member | Signature | Access |
 | --- | --- | ---
 | `Environment.NAME` | `Environment.`*name* `:` `string` | Static delimiter operator; name is an identifier passed as a string. |
 | `GetVariable(name)` | `static func GetVariable(name: string) -> string` | Explicit static method for variable names known only at runtime. |
 | `SetVariable(name, value)` | `static func SetVariable(name: string, value: string) -> string` | Explicit static method. The current implementation returns an empty string. |
+| `Args` | `static prop Args: string[]` | Static read-only property returning the script command-line arguments. |
 
 ## Parameters / Arguments
 
@@ -33,6 +35,7 @@ title: Environment
 | `Environment.NAME` | string | The variable value, or an empty string if the variable does not exist. |
 | `GetVariable(name)` | string | The variable value, or an empty string if the variable does not exist. |
 | `SetVariable(name, value)` | string | The current implementation returns an empty string. |
+| `Args` | `string[]` | The command-line script arguments supplied after the source file path. |
 
 ## Exceptions / Errors
 
@@ -57,6 +60,12 @@ title: Environment
   **Delimiter operator.** `Environment.NAME` is not a field access; it is a
   static delimiter-operator overload that passes the identifier `NAME` as a string argument.
   To read a variable whose name is stored in another string, call `GetVariable(varName)`.
+
+  **Script arguments.** `Environment.Args` returns the arguments the host passed to the
+  script after the source file path. The array is allocated by the runtime and contains one element per
+  argument; when no extra arguments are supplied the array is empty. The property is read-only and
+  `string[]` typed. To enumerate arguments, use a `foreach` loop or index the array
+  directly.
 
 <Info>
 Missing variables return an empty string. Test for absence with `value == ""`, not with a
@@ -163,6 +172,42 @@ public static func Main() -> void
 
     println(stage);
 }
+```
+
+  **Reading script command-line arguments with `Args`.**
+
+// environment_args.shard
+```csharp
+using stdio;
+using environment;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    args: string[] = Environment.Args;
+    println("argument count: " + args.Length);
+
+    foreach (arg in args)
+    {
+        println(arg);
+    }
+}
+```
+
+  Run with extra positional arguments:
+
+```bash
+shard environment_args.shard alpha beta gamma
+```
+
+  Expected output:
+
+```text
+argument count: 3
+alpha
+beta
+gamma
 ```
 
   **Platform case-sensitivity and cross-portable keys.**
@@ -282,5 +327,6 @@ public static func Main() -> void
 
   The `shard.environment` implementation ships as part of
   `ShardScript.Framework`. The native binding for
-  `Environment.GetVariable`, `Environment.SetVariable`, and the
-  static delimiter operator is in `ShardScript.Framework/system/environment.shard.cpp`.
+  `Environment.GetVariable`, `Environment.SetVariable`,
+  `Environment.Args`, and the static delimiter operator is in
+  `ShardScript.Framework/system/environment.shard.cpp`.

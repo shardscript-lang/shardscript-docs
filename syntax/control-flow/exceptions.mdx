@@ -108,6 +108,24 @@ throw;
   Because matching is sequential, always place the most specific types first and the broadest
   handler last.
 
+  **Flow-analysis warnings.** The compiler's flow analyzer tracks which exception types
+  may escape from each method, constructor, accessor, and operator. When a call site is not inside
+  a `try/catch` that can catch every thrown type, the compiler emits a warning:
+
+```text
+Call to 'Thrower' may throw 'RuntimeException'
+```
+
+  If the callee may throw but its specific type set is unknown, the warning falls back to:
+
+```text
+Call to 'Thrower' may throw an exception
+```
+
+  Wrapping the call in a `try/catch` with a matching filter — exact type, base
+  class, or `IThrowable` — removes the warning for the caught types. Warnings are
+  printed during normal compilation and `--lint`.
+
   **Rethrow semantics.** Inside a catch body, `throw;` re-raises
   the exception currently being handled, preserving the original stack trace. This is different from
   `throw ex;`, which would create a new throw point and overwrite the trace.
