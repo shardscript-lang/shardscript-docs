@@ -70,7 +70,7 @@ lambda () -> string
   - **Return type mismatch** — The type returned by a `return` statement must match the explicit or inferred delegate return type.
   - **Delegate signature mismatch** — A lambda assigned to a delegate must have the same parameter count, parameter types, and return type.
   - **Null delegate invocation** — Calling a delegate variable that holds `null` throws at runtime.
-  - **Captured locals are not lifted** — Referencing a local variable from an enclosing scope parses and binds, but the current VM does not capture it into the delegate object. The resulting behavior is undefined at runtime.
+  - **Captured locals are read-only** — Referencing a local variable from an enclosing scope creates a closure. Captured values are copied into the closure object at the point the lambda is created, and they cannot be reassigned inside the lambda body.
 
 ## Remarks
 
@@ -92,18 +92,17 @@ lambda () -> string
   can also be assigned directly to a delegate variable without wrapping it in a lambda.
 
   **Capture rules and closures.** The compiler resolves identifiers in the
-  lambda body against the enclosing scope chain, so outer local variables are visible during
-  semantic analysis. However, the current runtime does not implement closures: captured
-  locals are not lifted into the delegate object or passed to the anonymous method. A lambda
-  that references an enclosing local may compile but will read from the wrong stack slot at
-  runtime. Until closures are implemented, pass state explicitly through parameters or rely
-  on static fields and constants.
+  lambda body against the enclosing scope chain. When the lambda references an outer local
+  variable, parameter, or `this`, the compiler generates a closure class, copies
+  the captured values into it, and rewrites the lambda body to read from the closure object.
+  Captured values are copied at the point the lambda is created, so later changes to the outer
+  variable do not affect the closure, and the closure cannot reassign the captured variable.
 
-<Warning title="Closures are not fully implemented">
-Do not rely on a lambda capturing local variables from its enclosing method. The syntax
-  is accepted, but the VM has no closure object and the captured value is not available when
-  the delegate runs. Pass needed values as arguments, or capture static/global state instead.
-</Warning>
+<Info title="Captures are read-only and by value">
+Captured locals are copied into the closure object when the lambda is created. The lambda can
+  read them, but it cannot assign to them. If you need mutable shared state, store the value in
+  a heap-allocated object and capture the reference.
+</Info>
 
   **Asynchronous lambdas.** Prefix the lambda with `async`
   to use `await` inside the body. The return type must be declared
@@ -320,9 +319,9 @@ public static func Main() -> void
 }
 ```
 
-  **Common mistake: capturing a local variable.**
+  **Capturing a local variable.**
 
-// lambda_capture_unsupported.shard
+// lambda_capture.shard
 ```csharp
 using stdio;
 
@@ -334,21 +333,23 @@ public static func Main() -> void
 {
     factor: int = 10;
 
-    // WARNING: this references an outer local variable. It compiles, but the VM
-    // does not currently capture 'factor' into the delegate, so the result is
-    // undefined at runtime.
+    // The lambda captures 'factor' by value when it is created.
     scale: IntFunc = lambda (a: int) -> int
     {
         return a * factor;
     };
 
-    println(scale(5));
+    println(scale(5));   // 50
+
+    // Changing the outer local does not affect the closure.
+    factor = 20;
+    println(scale(5));   // still 50
 }
 ```
 
 <Warning>
-Until variable capture is implemented, rewrite the lambda to accept the value as a
-  parameter or store the value in a static field that both scopes can access.
+Captured locals are read-only inside the lambda. Reassigning a captured local produces a
+  compile-time error.
 </Warning>
 
 ## See also
@@ -359,4 +360,9 @@ Until variable capture is implemented, rewrite the lambda to accept the value as
 
 ## Source
 
-  Lambda expressions are parsed into `LambdaExpressionSyntax` nodes in `ShardScript/ShardScript/src/parsing/SourceParser.cpp`. The syntax node definition is in `ShardScript/ShardScript/include/shard/parsing/nodes/Expressions/LambdaExpressionSyntax.hpp`.
+  Lambda expressions are parsed into `LambdaExpressionSyntax` nodes in
+  `ShardScript/src/parsing/SourceParser.cpp`. Capture analysis, closure-class generation,
+  and body lowering happen in `ShardScript/src/semantic/ExpressionBinder.cpp`. Closure
+  allocation and delegate creation are emitted in
+  `ShardScript/src/compilation/AbstractEmiter.cpp`, and instance-bound delegate invocation
+  is handled in `ShardScript/src/runtime/VirtualMachine.cpp`.

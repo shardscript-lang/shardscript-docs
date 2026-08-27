@@ -68,6 +68,16 @@ ApplicationDomain  =  Program image  +  VirtualMachine  +  EventLoop  +  Garbage
   `DeclarationCollector` traverses the `PreviousExpression` receiver
   chains of member-access and invocation nodes before descending into argument lists.
 
+  **Closure lowering.** When `ExpressionBinder` visits a lambda that
+  references outer locals, parameters, or `this`, it creates a compiler-generated
+  closure class (`<Parent>k__ClosureBox__N`) with one field per captured value. The
+  lambda body is repointed at an instance `Invoke` method on that class, with the
+  closure object passed as synthetic `this`. Captured variable reads are rewritten to
+  member accesses against the closure instance. The emitter then allocates the closure
+  object, copies the current values of the captured locals into its fields, and creates
+  the delegate bound to the instance method. At runtime, invoking the delegate pushes
+  the closure object as `this` for the lambda body.
+
   **Async lowering.** Before bytecode is emitted, `async` methods are
   rewritten into compiler-generated state machines so that `await` can suspend and
   resume without threads.
