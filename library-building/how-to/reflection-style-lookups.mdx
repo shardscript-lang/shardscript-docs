@@ -153,8 +153,9 @@ ObjectInstance* MyLibrary_AppendAndCount(const CallState& context)
 
     // Call the dependency's Add method through the runtime invocation helper.
     // Keeping a direct pointer to the method avoids a second name lookup on every call.
+    // InvokeMethod expects a raw ObjectInstance** array and a count.
     std::array<ObjectInstance*, 2> addArgs = { list, value };
-    context.Runtimer->InvokeMethod(g_listAddMethod, addArgs, context.Frame);
+    context.Runtimer.InvokeMethod(g_listAddMethod, addArgs.data(), addArgs.size());
 
     // Return the new element count.
     std::int64_t newLength = static_cast<std::int64_t>(lengthBefore + 1);
@@ -229,5 +230,6 @@ If the program prints `Count: 1` without exceptions, the lazy lookup succeeded, 
 
   - `library-building/inter-library-dependencies` — declaring and using library dependencies.
   - `library-building/generic-types-and-type-parameters` — constructing generic types at runtime.
+  - `library-building/invoking-generic-methods` — calling methods that require generic type arguments from native callbacks.
   - `library-building/working-with-objects` — working with looked-up instances.
   - `library-building/shardlib-entrypoint` — entry point registration.

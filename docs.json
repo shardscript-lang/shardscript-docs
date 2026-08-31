@@ -244,6 +244,7 @@
               "library-building/how-to/working-with-arrays",
               "library-building/how-to/throwing-typed-exceptions",
               "library-building/how-to/generic-types-and-type-parameters",
+              "library-building/how-to/invoking-generic-methods",
               "library-building/how-to/inter-library-dependencies",
               "library-building/how-to/reflection-style-lookups",
               "library-building/how-to/async-await-native",
@@ -276,7 +277,7 @@
       },
       {
         "tab": "Implementation details",
-        "icon": "cpu",
+        "icon": "microchip",
         "pages": [
           {
             "group": "Implementation Details",
@@ -285,6 +286,20 @@
               "implementation-details/bytecode",
               "implementation-details/virtual-machine",
               "implementation-details/event-loop"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Related projects",
+        "icon": "box",
+        "pages": [
+          "related-projects/index",
+          {
+            "group": "Related Projects",
+            "pages": [
+              "related-projects/official-projects",
+              "related-projects/community-showcase"
             ]
           }
         ]

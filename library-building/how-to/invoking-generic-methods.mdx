@@ -1,0 +1,341 @@
+---
+title: Invoking Generic Methods from Native Code
+description: How native C++ callbacks call ShardScript methods that require generic type arguments, including static generic functions, instance methods on generic classes, and static generic methods inside generic classes.
+---
+
+This how-to guide shows how a native C++ callback invokes a `MethodSymbol*` that has generic type parameters. You will learn when to call `VirtualMachine::SetPendingTypeArguments`, when the receiver instance supplies the class type arguments automatically, and how the class and method type arguments are ordered on the frame.
+
+## Prerequisites
+
+  - A working native library project that compiles to a shared library exporting `ShardLib_GetMetadata` and `ShardLib_EntryPoint`.
+  - The library links against the ShardScript runtime shared library and includes headers from `ShardScript/include`.
+  - Familiarity with registering methods through `SymbolBuilder<MethodSymbol>` and capturing `MethodSymbol*` pointers for later use.
+  - Basic understanding of how `context.Frame->TypeArguments` maps to registered type parameters.
+
+## Goal
+
+  Implement a native library called `shard.genericinvokedemo` that exposes a single `Driver.RunAll()` method. Inside that callback you will call several generic methods:
+
+  - `Utils.Identity<T>(value: T) -> T` — a static generic function in a namespace.
+  - `Box<T>.GetValue() -> T` — an instance method on a generic class.
+  - `Box<T>.Wrap<U>(value: U) -> Box<U>` — an instance generic method on a generic class.
+  - `Box<T>.CreateEmpty() -> Box<T>` — a static method on a generic class.
+  - `Box<T>.Combine<U>(other: Box<U>) -> string` — a static generic method on a generic class.
+
+## Step-by-Step Instructions
+
+  **1. Create the library source file.**
+
+  Create a single `generic_invoke_demo.shard.cpp` file. Include the runtime headers so you can use `VirtualMachine::SetPendingTypeArguments` and `VirtualMachine::InvokeMethod`.
+
+// generic_invoke_demo.shard.cpp
+```cpp
+#include <ShardScript.hpp>
+#include <shard/runtime/NativeHelpers.hpp>
+
+using namespace shard;
+```
+
+  **2. Declare the symbols you will invoke.**
+
+  Capture the raw generic class symbol, the type parameter placeholder, and the method symbols you need. These are filled in during `SHARDLIB_ENTRYPOINT`.
+
+// generic_invoke_demo.shard.cpp
+```cpp
+static ClassSymbol* g_boxClass = nullptr;
+static TypeParameterSymbol* g_boxT = nullptr;
+
+static MethodSymbol* g_identityMethod = nullptr;
+static MethodSymbol* g_boxGetValueMethod = nullptr;
+static MethodSymbol* g_boxWrapMethod = nullptr;
+static MethodSymbol* g_boxCreateEmptyMethod = nullptr;
+static MethodSymbol* g_boxCombineMethod = nullptr;
+```
+
+  **3. Register the namespace-level generic function.**
+
+  `Utils.Identity<T>` is static and introduces its own type parameter. Capture the `TypeParameterSymbol*` if you need it for parameter or return types.
+
+// generic_invoke_demo.shard.cpp
+```cpp
+static void RegisterUtils(SymbolBuilder<NamespaceSymbol>& ns)
+{
+    SymbolBuilder<MethodSymbol> identity = ns.AddMethod(
+        L"Identity",
+        nullptr, // return type set below
+        LINK_STATIC,
+        ACS_PUBLIC);
+
+    TypeParameterSymbol* t = identity.AddTypeParameter(L"T").Get();
+    identity.Get()->ReturnType = t;
+
+    identity.AddParameter(L"value", t)
+            .SetCallback([](const CallState& context)
+            {
+                // For a simple identity function the concrete type does not matter;
+                // just return the argument unchanged.
+                return context.Args[0];
+            });
+
+    g_identityMethod = identity.Get();
+}
+```
+
+  **4. Register the generic `Box<T>` class and its methods.**
+
+  Add the class type parameter first, then register fields and methods. For methods that introduce their own type parameter, call `AddTypeParameter` after `AddMethod`.
+
+// generic_invoke_demo.shard.cpp
+```cpp
+static void RegisterBox(SymbolBuilder<NamespaceSymbol>& ns)
+{
+    SymbolFactory& factory = ns.GetFactory();
+    SymbolBuilder<ClassSymbol> box = ns.AddClass(L"Box", ACS_PUBLIC, LINK_INSTANCE);
+
+    g_boxClass = box.Get();
+    g_boxT = box.AddTypeParameter(L"T").Get();
+
+    FieldSymbol* valueField = box.AddField(L"_value", g_boxT, LINK_INSTANCE, ACS_PRIVATE).Get();
+
+    box.AddInit()
+       .AddParameter(L"value", g_boxT)
+       .SetCallback([valueField](const CallState& context)
+       {
+           ObjectInstance* self = context.Args[0];
+           ObjectInstance* value = context.Args[1];
+           self->SetField(valueField->SlotIndex, value);
+           return self;
+       });
+
+    g_boxGetValueMethod = box.AddMethod(L"GetValue", g_boxT, LINK_INSTANCE, ACS_PUBLIC)
+        .SetCallback([valueField](const CallState& context)
+        {
+            ObjectInstance* self = context.Args[0];
+            return self->GetField(valueField->SlotIndex);
+        })
+        .Get();
+
+    SymbolBuilder<MethodSymbol> wrap = box.AddMethod(
+        L"Wrap",
+        TYPE_ANY,
+        LINK_INSTANCE,
+        ACS_PUBLIC);
+
+    TypeParameterSymbol* u = wrap.AddTypeParameter(L"U").Get();
+
+    GenericTypeSymbol* boxOfU = factory.GenericType(g_boxClass, { { L"T", u } });
+    wrap.Get()->ReturnType = boxOfU;
+
+    wrap.AddParameter(L"value", u)
+        .SetCallback([valueField](const CallState& context)
+        {
+            ObjectInstance* self = context.Args[0];
+            ObjectInstance* value = context.Args[1];
+
+            // The class type argument T comes from self->getShape().
+            // The method type argument U is context.Frame->TypeArguments[1].
+            TypeSymbol* concreteU = context.Frame->TypeArguments[1];
+
+            ObjectInstance* wrapped = context.Collector.AllocateGeneric(g_boxClass, { concreteU });
+            wrapped->SetField(valueField->SlotIndex, value);
+            return wrapped;
+        });
+
+    g_boxWrapMethod = wrap.Get();
+
+    GenericTypeSymbol* boxOfT = factory.GenericType(g_boxClass, { { L"T", g_boxT } });
+    g_boxCreateEmptyMethod = box.AddMethod(
+            L"CreateEmpty",
+            boxOfT,
+            LINK_STATIC,
+            ACS_PUBLIC)
+        .SetCallback([valueField](const CallState& context)
+        {
+            TypeSymbol* concreteT = context.Frame->TypeArguments[0];
+            ObjectInstance* empty = context.Collector.AllocateGeneric(g_boxClass, { concreteT });
+            empty->SetField(valueField->SlotIndex, GarbageCollector::NullInstance);
+            return empty;
+        })
+        .Get();
+
+    SymbolBuilder<MethodSymbol> combine = box.AddMethod(
+        L"Combine",
+        TYPE_STRING,
+        LINK_STATIC,
+        ACS_PUBLIC);
+
+    TypeParameterSymbol* combineU = combine.AddTypeParameter(L"U").Get();
+    GenericTypeSymbol* boxOfUCombine = factory.GenericType(g_boxClass, { { L"T", combineU } });
+
+    combine.AddParameter(L"other", boxOfUCombine)
+           .SetCallback([](const CallState& context)
+           {
+               // Demonstrates that class T and method U are both on the frame.
+               TypeSymbol* concreteT = context.Frame->TypeArguments[0];
+               TypeSymbol* concreteU = context.Frame->TypeArguments[1];
+
+               std::wstring message = L"T=" + concreteT->Name + L",U=" + concreteU->Name;
+               return context.Collector.FromValue(message);
+           });
+
+    g_boxCombineMethod = combine.Get();
+}
+```
+
+  <Info>
+The order of `AddTypeParameter` calls determines the index in `context.Frame->TypeArguments`. For `Box<T>.Combine<U>`, index `0` is `T` and index `1` is `U`.
+  </Info>
+
+  **5. Implement the driver callback that invokes the generic methods.**
+
+  The driver callback calls each method using the correct pending-type-argument pattern. Keep a small helper that sets pending arguments and invokes a method so the examples stay readable.
+
+// generic_invoke_demo.shard.cpp
+```cpp
+static ObjectInstance* InvokeGeneric(
+    VirtualMachine& vm,
+    MethodSymbol* method,
+    std::initializer_list<TypeSymbol*> typeArgs,
+    std::initializer_list<ObjectInstance*> args)
+{
+    vm.SetPendingTypeArguments(typeArgs);
+
+    std::vector<ObjectInstance*> argVector(args);
+    return vm.InvokeMethod(method, argVector.data(), argVector.size());
+}
+
+static ObjectInstance* Driver_RunAll(const CallState& context)
+{
+    VirtualMachine& vm = context.Runtimer;
+    GarbageCollector& gc = context.Collector;
+
+    TypeSymbol* intType = SymbolTable::Primitives::Integer;
+    TypeSymbol* stringType = SymbolTable::Primitives::String;
+    TypeSymbol* boolType = SymbolTable::Primitives::Boolean;
+
+    // 1. Namespace.Function<T>()
+    ObjectInstance* identityResult = InvokeGeneric(
+        vm,
+        g_identityMethod,
+        { intType },
+        { gc.FromValue(42) });
+
+    // 2. Class<T>.Method() — instance non-generic method on a generic class.
+    //    The class type argument comes from the receiver instance.
+    ObjectInstance* stringBox = NewObject(context, g_boxClass, { stringType }, { gc.FromValue(L"hello") });
+    ObjectInstance* getValueResult = vm.InvokeMethod(
+        g_boxGetValueMethod,
+        { stringBox });
+
+    // 3. Class<T>.Method<K>() — instance generic method on a generic class.
+    //    Class T is taken from the receiver; method K is supplied as a pending argument.
+    ObjectInstance* wrappedBox = InvokeGeneric(
+        vm,
+        g_boxWrapMethod,
+        { intType },
+        { stringBox, gc.FromValue(123) });
+
+    // 4. Class<T>.StaticMethod() — static non-generic method on a generic class.
+    //    The class type argument must be supplied because there is no receiver.
+    ObjectInstance* emptyBox = InvokeGeneric(
+        vm,
+        g_boxCreateEmptyMethod,
+        { stringType },
+        { });
+
+    // 5. Class<T>.StaticMethod<K>() — static generic method on a generic class.
+    //    Both class T and method K must be supplied, in that order.
+    ObjectInstance* combineResult = InvokeGeneric(
+        vm,
+        g_boxCombineMethod,
+        { stringType, intType },
+        { wrappedBox });
+
+    // Return the combine result so the caller can print it.
+    return combineResult;
+}
+```
+
+  <Warning>
+Always supply class type arguments before method type arguments. For `Class<T>.StaticMethod<K>()` call `SetPendingTypeArguments({ T, K })`. For `Class<T>.Method<K>()` supply only the method arguments; the VM copies `T` from the receiver's `TypeShape`.
+  </Warning>
+
+  **6. Wire everything together in the entry point.**
+
+// generic_invoke_demo.shard.cpp
+```cpp
+SHARDLIB_GETMETADATA
+{
+    lib.Name = L"shard.genericinvokedemo";
+    lib.Description = L"Demo for invoking generic methods from native callbacks";
+    lib.Version = L"1.0.0";
+}
+
+SHARDLIB_ENTRYPOINT
+{
+    SymbolBuilder<NamespaceSymbol> ns(context, L"genericinvokedemo");
+
+    RegisterUtils(ns);
+    RegisterBox(ns);
+
+    ns.AddClass(L"Driver", ACS_PUBLIC, LINK_STATIC, [](SymbolBuilder<ClassSymbol> driver)
+    {
+        driver.AddMethod(L"RunAll", TYPE_STRING, LINK_STATIC, ACS_PUBLIC)
+              .SetCallback(&Driver_RunAll);
+    });
+}
+```
+
+  **7. Build the shared library.**
+
+  The build is the same as any other ShardScript native library.
+
+```bash
+# Windows
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+```
+
+## Verification
+
+  Run a ShardScript program that loads the library and calls `Driver.RunAll()`.
+
+// app.shard
+```csharp
+using stdio;
+using genericinvokedemo;
+
+namespace demo;
+
+public static func Main() -> void
+{
+    string result = Driver.RunAll();
+    println(result);
+}
+```
+
+```bash
+# Windows
+shard app.shard -l build/generic_invoke_demo.dll
+```
+
+  Expected output:
+
+```text
+T=string,U=int
+```
+
+## Troubleshooting
+
+  - **Wrong generic type at runtime.** Verify the order of pending type arguments. Class type arguments come first, then method type arguments. For `Class<T>.StaticMethod<K>()` pass `{ T, K }`.
+  - **Crash when invoking an instance generic method.** Make sure the receiver is the first argument. The VM reads the class type arguments from `receiver->getShape()->GenericArguments`.
+  - **`SetPendingTypeArguments` leaks into the next invocation.** `SetPendingTypeArguments` replaces the entire pending list, so always set it immediately before the call you are about to make.
+  - **`InvokeMethod` overload does not compile.** Use the overload that takes `ObjectInstance**` and `std::size_t`: `vm.InvokeMethod(method, args.data(), args.size())`. The helper shown above wraps this for `std::initializer_list` convenience.
+  - **Method symbol is null.** Capture the symbol with `.Get()` during registration and store it in a static variable. Do not call `FindMethod` during static initialization; lazy lookup inside the callback is safer for cross-library references.
+
+## See also
+
+  - `library-building/generic-types-and-type-parameters` — registering generic classes and reading `context.Frame->TypeArguments`.
+  - `library-building/reflection-style-lookups` — looking up symbols from other libraries and invoking them.
+  - `library-building/working-with-objects` — allocating constructed generic instances with `AllocateGeneric`.
+  - `library-building/method-symbol-builder` — adding type parameters to methods.
